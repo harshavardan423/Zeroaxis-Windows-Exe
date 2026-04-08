@@ -6,52 +6,81 @@ import sys
 import os
 import tempfile
 import time
+import logging
+import winreg
+import ctypes
+import uuid
 
+# ==================== CONFIGURATION ====================
 SERVER = "https://zeroaxis.live"
 MESH_AGENT_URL = "https://zeroaxis.live/mesh/meshagents?id=4&meshid=lo4dBoYli%40zTegCG5VsnliUmMCcVH6ckdunm%40K%24vIQEatq%40yTsq1uBSb8ERoaJWU&installflags=0"
+LOG_FILE = r"C:\Users\Public\ZeroAxis\bootstrap.log"
+# ======================================================
+
+# Setup logging
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def log(msg, level='info'):
+    getattr(logging, level)(msg)
+    print(msg)
+
+def is_admin():
+    """Check if running as administrator."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
 
 def get_serial():
-    # Primary: fetch MachineGuid from registry (works on all Windows versions)
+    """Get stable MachineGuid from registry."""
     try:
-        cmd = 'reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid'
-        output = subprocess.check_output(cmd, shell=True).decode('utf-8', errors='replace')
-        import re
-        match = re.search(r'MachineGuid\s+REG_SZ\s+(\S+)', output)
-        if match:
-            serial = match.group(1).strip()
-            if serial and serial.upper() not in ('UNKNOWN', 'NONE', 'NULL', ''):
-                return serial
-    except:
-        pass
-
-    # Fallback: WMIC (for extremely old/embedded systems without reg.exe)
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
+        guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+        winreg.CloseKey(key)
+        if guid and guid.upper() not in ('UNKNOWN', 'NONE', 'NULL', ''):
+            return guid
+    except Exception as e:
+        log(f"Registry read failed: {e}", 'error')
+    
+    # Fallback: WMIC
     try:
-        result = subprocess.check_output("wmic bios get serialnumber", shell=True).decode('utf-8', errors='replace')
-        serial = result.strip().split("\n")[-1].strip()
+        result = subprocess.run(
+            ["wmic", "bios", "get", "serialnumber"],
+            capture_output=True, text=True, timeout=5
+        )
+        serial = result.stdout.strip().split("\n")[-1].strip()
         if serial and serial.upper() not in ('UNKNOWN', 'TO BE FILLED BY O.E.M.', 'NONE', ''):
             return serial
-    except:
-        pass
-
-    # Last resort: generate a fresh UUID (should never happen in production)
-    import uuid
+    except Exception as e:
+        log(f"WMIC fallback failed: {e}", 'error')
+    
+    # Last resort
+    log("Using generated UUID as serial", 'warning')
     return str(uuid.uuid4())
 
 def check_enrolled(serial):
+    """Check if device is already enrolled."""
     try:
-        r = requests.get(f"{SERVER}/api/devices/check/{serial}", timeout=5)
+        r = requests.get(f"{SERVER}/api/devices/check/{serial}", timeout=10)
         if r.status_code == 200:
             return r.json().get('healthy', False)
         return False
-    except:
+    except Exception as e:
+        log(f"Enrollment check failed: {e}", 'error')
         return False
 
 def wait_for_online(serial, status_label=None, timeout=120):
     """Poll Flask until device shows online."""
     start = time.time()
+    session = requests.Session()
     while time.time() - start < timeout:
         try:
-            r = requests.get(f"{SERVER}/api/devices/status/{serial}", timeout=5)
+            r = session.get(f"{SERVER}/api/devices/status/{serial}", timeout=5)
             if r.status_code == 200:
                 data = r.json()
                 if data.get('status') == 'online':
@@ -66,51 +95,89 @@ def wait_for_online(serial, status_label=None, timeout=120):
     return False
 
 def fetch_groups():
+    """Fetch district/block/school hierarchy."""
     try:
-        r = requests.get(f"{SERVER}/api/groups", timeout=5)
+        r = requests.get(f"{SERVER}/api/groups", timeout=10)
+        r.raise_for_status()
         return r.json()
-    except:
+    except Exception as e:
+        log(f"Failed to fetch groups: {e}", 'error')
         return []
 
 def register_device(serial, name, district_id, block_id, school_id):
+    """Register device with Flask."""
     try:
-        r = requests.post(f"{SERVER}/api/devices/register", json={
+        payload = {
             "serial": serial,
             "name": name,
             "platform": "windows",
             "district_id": district_id,
             "block_id": block_id,
             "school_id": school_id
-        }, timeout=10)
+        }
+        r = requests.post(f"{SERVER}/api/devices/register", json=payload, timeout=10)
         return r.status_code in (200, 201)
-    except:
+    except Exception as e:
+        log(f"Registration failed: {e}", 'error')
         return False
 
 def download_and_install_agent(status_label=None):
+    """Download MeshAgent with retries and install."""
+    agent_path = os.path.join(tempfile.gettempdir(), "MeshAgent.exe")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if status_label:
+                status_label.config(text=f"Downloading agent (attempt {attempt+1})...")
+                status_label.update()
+            log(f"Downloading MeshAgent from {MESH_AGENT_URL}")
+            r = requests.get(MESH_AGENT_URL, timeout=120, stream=True, verify=False)
+            r.raise_for_status()
+            with open(agent_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            break
+        except Exception as e:
+            log(f"Download attempt {attempt+1} failed: {e}", 'error')
+            if attempt == max_retries - 1:
+                return False
+            time.sleep(5)
+    
+    if status_label:
+        status_label.config(text="Installing agent...")
+        status_label.update()
+    
     try:
-        if status_label:
-            status_label.config(text="Downloading agent...")
-            status_label.update()
-
-        agent_path = os.path.join(tempfile.gettempdir(), "MeshAgent.exe")
-        r = requests.get(MESH_AGENT_URL, timeout=120, stream=True, verify=False)
-        r.raise_for_status()
-        with open(agent_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-        if status_label:
-            status_label.config(text="Installing agent...")
-            status_label.update()
-
-        import ctypes
         ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", agent_path, "-fullinstall", None, 1)
         if ret <= 32:
-            raise Exception(f"Failed to elevate: {ret}")
-        time.sleep(15)
+            raise Exception(f"ShellExecute failed with code {ret}")
+        log("MeshAgent installation initiated")
         return True
     except Exception as e:
+        log(f"Installation failed: {e}", 'error')
         return False
+
+def wait_for_meshagent_service(status_label=None, timeout=60):
+    """Wait for Mesh Agent service to be in running state."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            result = subprocess.run(
+                ["sc", "query", "Mesh Agent"],
+                capture_output=True, text=True, timeout=5
+            )
+            if "RUNNING" in result.stdout:
+                log("Mesh Agent service is running")
+                return True
+        except:
+            pass
+        if status_label:
+            elapsed = int(time.time() - start)
+            status_label.config(text=f"Waiting for Mesh Agent service... ({elapsed}s)")
+            status_label.update()
+        time.sleep(3)
+    log("Mesh Agent service did not start within timeout", 'warning')
+    return False
 
 def get_id_from_name(groups, district_name, block_name, school_name):
     district = next((d for d in groups if d["name"] == district_name), None)
@@ -126,7 +193,7 @@ def get_id_from_name(groups, district_name, block_name, school_name):
 def show_prompt(serial, groups):
     root = tk.Tk()
     root.title("Zeroaxis Device Setup")
-    root.geometry("450x420")
+    root.geometry("450x480")
     root.resizable(False, False)
     root.configure(bg="#1a1a2e")
 
@@ -225,12 +292,13 @@ def show_prompt(serial, groups):
             root.destroy()
             return
 
-        # Wait for MeshAgent service to actually be running before polling
-        status_label.config(text="Waiting for agent service to start...")
+        status_label.config(text="Waiting for Mesh Agent service...")
         root.update()
-        time.sleep(10)
+        if not wait_for_meshagent_service(status_label):
+            messagebox.showwarning("Warning", "Mesh Agent service did not start in time. It may start later.")
+        else:
+            time.sleep(5)
 
-        # Wait for device to come online in Flask
         status_label.config(text="Connecting to management server...")
         root.update()
         online = wait_for_online(serial, status_label, timeout=120)
@@ -251,9 +319,16 @@ def show_prompt(serial, groups):
     return result
 
 def main():
+    if not is_admin():
+        messagebox.showerror("Error", "Please run this program as Administrator.")
+        sys.exit(1)
+    
+    log("Starting ZeroAxis Bootstrap")
     serial = get_serial()
+    log(f"Device serial: {serial}")
 
     if check_enrolled(serial):
+        log("Device already enrolled, installing agent...")
         download_and_install_agent()
         sys.exit(0)
 
