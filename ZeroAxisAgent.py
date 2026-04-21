@@ -111,6 +111,8 @@ class PolicyEnforcer:
         self.internet_filter = "none"
         self.allowed_domains = []
         self.user_group_id = None
+        self.allowed_browser = ""
+        self.allowed_document_viewer = ""
         self.session_start = datetime.now()
         self.today_usage = 0
 
@@ -124,6 +126,8 @@ class PolicyEnforcer:
         self.curfew_end = policies.get('curfew_end')
         self.internet_filter = policies.get('internet_filter', 'none')
         self.allowed_domains = policies.get('allowed_domains', [])
+        self.allowed_browser = policies.get('allowed_browser', '')
+        self.allowed_document_viewer = policies.get('allowed_document_viewer', '')
         # Reset daily usage if new day
         today_date = datetime.now().date()
         if not hasattr(self, '_last_date') or self._last_date != today_date:
@@ -301,6 +305,16 @@ class LauncherApp:
                                bg="#dc3545", fg="white", font=("Arial", 10))
         logout_btn.pack(side="right", padx=10)
 
+        # Buttons for Browser and Documents
+        button_frame = tk.Frame(self.root, bg="#1a1a2e")
+        button_frame.pack(fill="x", padx=10, pady=5)
+        browser_btn = tk.Button(button_frame, text="Browser", command=self.open_browser,
+                                bg="#2E86AB", fg="white", font=("Arial", 10))
+        browser_btn.pack(side="left", padx=5, expand=True, fill="x")
+        docs_btn = tk.Button(button_frame, text="Documents", command=self.open_documents,
+                             bg="#2E86AB", fg="white", font=("Arial", 10))
+        docs_btn.pack(side="left", padx=5, expand=True, fill="x")
+
         # Main area: grid of app icons
         self.apps_frame = tk.Frame(self.root, bg="#1a1a2e")
         self.apps_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -398,6 +412,26 @@ class LauncherApp:
 
     def show_message(self, msg):
         messagebox.showwarning("ZeroAxis", msg)
+
+    def open_browser(self):
+        browser = self.enforcer.allowed_browser
+        if browser:
+            try:
+                subprocess.Popen([browser])
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to launch browser: {e}")
+        else:
+            messagebox.showwarning("No Browser", "No browser app configured for this mode.")
+
+    def open_documents(self):
+        viewer = self.enforcer.allowed_document_viewer
+        if viewer:
+            try:
+                subprocess.Popen([viewer])
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to launch document viewer: {e}")
+        else:
+            messagebox.showwarning("No Viewer", "No document viewer configured for this mode.")
 
     def run(self):
         self.root.mainloop()
