@@ -326,7 +326,7 @@ def show_prompt(serial, groups):
 
 def install_windows_agent():
     """Download the ZeroAxis Windows Agent EXE and set it as the shell."""
-    agent_url = "https://zeroaxis.live/downloads/ZeroAxisAgent.exe"   # <-- change to your actual URL
+    agent_url = "https://zeroaxis-windows-agent.s3.us-east-1.amazonaws.com/ZeroAxisAgent.exe"
     agent_dir = r"C:\Program Files\ZeroAxis"
     agent_exe = os.path.join(agent_dir, "ZeroAxisAgent.exe")
 
