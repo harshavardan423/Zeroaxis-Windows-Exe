@@ -64,6 +64,26 @@ def get_serial():
     import uuid
     return str(uuid.uuid4())
 
+# ========== User folder helpers ==========
+USER_FILES_BASE = r"C:\ZeroAxisUsers"
+
+def get_user_folder(username: str) -> str:
+    """Return and create the dedicated folder for this end user."""
+    folder = os.path.join(USER_FILES_BASE, username)
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+def open_user_folder(username: str):
+    """Open the user's dedicated folder in a restricted Explorer window."""
+    folder = get_user_folder(username)
+    try:
+        subprocess.Popen(
+            ["explorer.exe", "/select,", folder],
+            shell=False
+        )
+    except Exception as e:
+        log(f"open_user_folder error: {e}", 'error')
+
 # ========== Windows lockdown helpers ==========
 def apply_lockdown():
     """Disable Task Manager, Win keys, Sticky Keys via registry."""
@@ -551,6 +571,14 @@ class LauncherWindow:
         self.root.attributes("-fullscreen", True)
         self.root.configure(bg="#1a1a2e")
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
+        # Set USERPROFILE-equivalent env vars so launched apps default to user folder
+        username = self.user_data.get('username', '')
+        self._user_folder = get_user_folder(username)
+        os.environ['ZEROAXIS_USER_HOME'] = self._user_folder
+        os.environ['USERPROFILE']        = self._user_folder
+        os.environ['HOMEPATH']           = self._user_folder
+        os.environ['HOMEDRIVE']          = ''
+
         self._build()
         self._start_threads()
 
@@ -600,8 +628,9 @@ class LauncherWindow:
     def _build_quick_buttons(self):
         for w in self.quick_frame.winfo_children():
             w.destroy()
-        browser = self.enforcer.allowed_browser
-        docs    = self.enforcer.allowed_document_viewer
+        browser  = self.enforcer.allowed_browser
+        docs     = self.enforcer.allowed_document_viewer
+        username = self.user_data.get('username', '')
         if browser:
             tk.Button(self.quick_frame, text="🌐 Browser",
                       command=lambda: self._launch(browser),
@@ -613,7 +642,13 @@ class LauncherWindow:
                       command=lambda: self._launch(docs),
                       bg="#2E86AB", fg="white", font=("Arial", 10),
                       relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left")
+                      cursor="hand2").pack(side="left", padx=(0, 8))
+        # Always show My Files — opens this user's dedicated folder
+        tk.Button(self.quick_frame, text="📁 My Files",
+                  command=lambda: open_user_folder(username),
+                  bg="#5c636a", fg="white", font=("Arial", 10),
+                  relief="flat", padx=14, pady=6,
+                  cursor="hand2").pack(side="left")
 
     def _build_app_grid(self):
         for w in self.apps_frame.winfo_children():
@@ -686,13 +721,20 @@ class LauncherWindow:
     def _logout(self):
         self.client.logout()
         self.tracker.flush_now()
+        self._restore_env()
         self.root.destroy()
 
     def _force_logout(self):
         self.client.logout()
         self.tracker.flush_now()
+        self._restore_env()
         self.root.destroy()
         lock_workstation()
+
+    def _restore_env(self):
+        """Clear user-specific env overrides so next login gets a clean state."""
+        for key in ('ZEROAXIS_USER_HOME', 'USERPROFILE', 'HOMEPATH', 'HOMEDRIVE'):
+            os.environ.pop(key, None)
 
     def _sync_and_refresh(self):
         def _sync():
@@ -724,6 +766,13 @@ class LauncherWindow:
                 self.enforcer.today_usage += 1
                 self.tracker.tick()
                 self.root.after(0, self._update_screen_time_bar)
+                # Push per-user screen time every 5 minutes
+                if self.enforcer.today_usage % 5 == 0:
+                    threading.Thread(
+                        target=self.client.push_screen_time,
+                        args=(self.enforcer.today_usage,),
+                        daemon=True
+                    ).start()
                 if self.enforcer.screen_time_exceeded():
                     self.root.after(0, lambda: (
                         messagebox.showwarning("ZeroAxis", "Screen time limit reached."),
@@ -753,8 +802,9 @@ class LauncherWindow:
 # ========== HTTP client ==========
 class ZeroAxisClient:
     def __init__(self, serial: str):
-        self.serial  = serial
-        self.session = requests.Session()
+        self.serial          = serial
+        self.session         = requests.Session()
+        self.active_username = None   # set on successful login, cleared on logout
 
     def login(self, username: str, pin: str) -> Optional[dict]:
         try:
@@ -767,6 +817,7 @@ class ZeroAxisClient:
             if r.ok:
                 data = r.json()
                 if data.get('success'):
+                    self.active_username = username
                     return data
                 log(f"Login rejected: {data.get('error')}")
         except Exception as e:
@@ -782,6 +833,7 @@ class ZeroAxisClient:
             )
         except Exception:
             pass
+        self.active_username = None
 
     def sync_policy(self) -> Optional[dict]:
         try:
@@ -794,6 +846,22 @@ class ZeroAxisClient:
         except Exception as e:
             log(f"sync_policy error: {e}", 'error')
         return None
+
+    def push_screen_time(self, minutes: int):
+        if not self.active_username:
+            return
+        try:
+            self.session.post(
+                f"{SERVER_URL}/api/enduser/screen_time/{self.serial}",
+                json={
+                    "username": self.active_username,
+                    "date": date.today().isoformat(),
+                    "screen_time_mins": minutes,
+                },
+                timeout=5
+            )
+        except Exception as e:
+            log(f"push_screen_time error: {e}", 'error')
 
 # ========== Background workers (stats + commands) ==========
 def start_background_workers(serial: str, enforcer: PolicyEnforcer):
