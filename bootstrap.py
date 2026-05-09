@@ -304,16 +304,20 @@ def show_prompt(serial, groups):
         online = wait_for_online(serial, status_label, timeout=120)
 
         if online:
-            status_label.config(text="Installing Windows agent...")
-            root.update()
-            install_windows_agent()
             status_label.config(text="Enrolled successfully!")
-            messagebox.showinfo("Success", "Device enrolled and Windows agent installed. The device will reboot to activate kiosk mode.")
-            # Optional: reboot to apply shell change
-            import subprocess
-            subprocess.run(["shutdown", "/r", "/t", "10", "/c", "ZeroAxis setup complete. Rebooting in 10 seconds..."])
+            messagebox.showinfo(
+                "Success",
+                "Device enrolled and MeshAgent installed.\n\n"
+                "To activate the ZeroAxis launcher, enable Kiosk Mode from the dashboard "
+                "and set the package to the full path of ZeroAxisAgent.exe.\n\n"
+                "The device will apply it on next reboot."
+            )
         else:
-            messagebox.showwarning("Partial Success", "Agent installed but device hasn't come online yet. It may take a few more minutes.")
+            messagebox.showwarning(
+                "Partial Success",
+                "MeshAgent installed but device hasn't come online yet. "
+                "It may take a few more minutes."
+            )
         root.destroy()
 
     btn = tk.Button(body, text="Confirm & Enroll", command=on_confirm,

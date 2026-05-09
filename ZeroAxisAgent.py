@@ -24,10 +24,12 @@ import urllib.request
 
 # ========== Configuration ==========
 SERVER_URL  = "https://zeroaxis.live"
-STATS_INTERVAL   = 30       # seconds
-COMMAND_INTERVAL = 10       # seconds
-POLICY_INTERVAL  = 900      # 15 minutes
-APP_USAGE_INTERVAL = 60     # seconds
+STATS_INTERVAL        = 30       # seconds
+COMMAND_INTERVAL      = 10       # seconds
+POLICY_INTERVAL       = 900      # 15 minutes
+APP_USAGE_INTERVAL    = 60       # seconds
+DNS_FLUSH_INTERVAL    = 60       # seconds
+SCREEN_TIME_INTERVAL  = 300      # push screen time every 5 minutes
 # ====================================
 
 # Logging
@@ -268,10 +270,24 @@ def collect_stats(serial: str):
 # ========== App usage tracker ==========
 class AppUsageTracker:
     def __init__(self, serial: str):
-        self.serial  = serial
-        self.usage   = {}   # {app_name: minutes}
-        self.today   = date.today()
-        self._lock   = threading.Lock()
+        self.serial          = serial
+        self.usage           = {}   # {app_name: minutes}
+        self.session_usage   = {}   # {app_name: minutes} since last login
+        self.today           = date.today()
+        self._lock           = threading.Lock()
+        self._active_user    = None   # set by LauncherWindow
+        self._session_start  = None   # datetime of login
+
+    def set_active_user(self, username: Optional[str]):
+        """Call on login (with username) and logout (with None)."""
+        with self._lock:
+            if username and username != self._active_user:
+                self._session_usage = {}
+                self._session_start = datetime.now()
+                log(f"AppUsageTracker: session started for {username}")
+            elif not username:
+                log(f"AppUsageTracker: session ended for {self._active_user}")
+            self._active_user = username
 
     def tick(self):
         """Called every minute — detect foreground process and add 1 min."""
@@ -279,10 +295,11 @@ class AppUsageTracker:
             today = date.today()
             if today != self.today:
                 self._flush()
-                self.usage = {}
+                with self._lock:
+                    self.usage = {}
+                    self._session_usage = {}
                 self.today = today
 
-            # Get foreground window process name
             hwnd = ctypes.windll.user32.GetForegroundWindow()
             pid  = ctypes.c_ulong()
             ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -290,11 +307,13 @@ class AppUsageTracker:
             name = proc.name()
             with self._lock:
                 self.usage[name] = self.usage.get(name, 0) + 1
+                if self._active_user:
+                    self._session_usage[name] = self._session_usage.get(name, 0) + 1
         except Exception:
             pass
 
     def _flush(self):
-        """POST today's usage to Flask."""
+        """POST device-level usage; also POST per-user usage if a user is logged in."""
         try:
             with self._lock:
                 if not self.usage:
@@ -303,20 +322,91 @@ class AppUsageTracker:
                     {"app_name": k, "package_name": k, "foreground_mins": v}
                     for k, v in self.usage.items()
                 ]
-            payload = {
-                "date": self.today.isoformat(),
-                "apps": apps
-            }
+                active_user   = self._active_user
+                session_apps  = [
+                    {"app_name": k, "package_name": k, "foreground_mins": v}
+                    for k, v in self._session_usage.items()
+                ] if self._session_usage else []
+
+            today_str = self.today.isoformat()
+
+            # Device-level POST (no username — server stores in WindowsAppUsage)
             requests.post(
                 f"{SERVER_URL}/api/devices/{self.serial}/app_usage",
-                json=payload, timeout=10
+                json={"date": today_str, "apps": apps},
+                timeout=10
             )
-            log(f"App usage flushed: {len(apps)} apps")
+            log(f"Device app usage flushed: {len(apps)} apps")
+
+            # Per-user POST (with username — server attributes to end user)
+            if active_user and session_apps:
+                requests.post(
+                    f"{SERVER_URL}/api/devices/{self.serial}/app_usage",
+                    json={"date": today_str, "apps": session_apps, "username": active_user},
+                    timeout=10
+                )
+                log(f"User app usage flushed: {len(session_apps)} apps for {active_user}")
+
         except Exception as e:
             log(f"App usage flush error: {e}", 'error')
 
     def flush_now(self):
         self._flush()
+
+    def get_session_minutes(self) -> int:
+        """Total minutes used in the current session (for screen time tracking)."""
+        with self._lock:
+            return sum(self._session_usage.values()) if self._session_usage else 0
+
+# ========== DNS tracker ==========
+class DnsTracker:
+    """Periodically scrapes DNS client cache and flushes to the server."""
+    def __init__(self, serial: str):
+        self.serial    = serial
+        self._batch    = []
+        self._lock     = threading.Lock()
+        self._last_seen: set = set()
+
+    def collect(self):
+        """Read Windows DNS client cache via ipconfig /displaydns."""
+        try:
+            result = subprocess.run(
+                ['ipconfig', '/displaydns'],
+                capture_output=True, text=True, timeout=10
+            )
+            domains = set()
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if 'Record Name' in line and ':' in line:
+                    domain = line.split(':', 1)[-1].strip().lower().rstrip('.')
+                    if domain and '.' in domain and not domain.replace('.', '').isdigit():
+                        domains.add(domain)
+            new_domains = domains - self._last_seen
+            self._last_seen = domains
+            if new_domains:
+                with self._lock:
+                    self._batch.extend(list(new_domains))
+                log(f"DNS: collected {len(new_domains)} new domains")
+        except Exception as e:
+            log(f"DNS collect error: {e}", 'error')
+
+    def flush(self):
+        """POST batched domains to the server."""
+        with self._lock:
+            if not self._batch:
+                return
+            batch = list(self._batch)
+            self._batch.clear()
+        try:
+            requests.post(
+                f"{SERVER_URL}/api/devices/{self.serial}/network_usage",
+                json={"dns_domains": batch},
+                timeout=10
+            )
+            log(f"DNS: flushed {len(batch)} domains")
+        except Exception as e:
+            log(f"DNS flush error: {e}", 'error')
+
 
 # ========== Command executor ==========
 class CommandExecutor:
@@ -404,6 +494,22 @@ class CommandExecutor:
         elif command == 'block_domains':
             domains = payload.get('domains', [])
             _apply_hosts_block(domains)
+            log(f"block_domains applied: {len(domains)} domains")
+
+        elif command == 'av_scan':
+            scan_type = payload.get('type', 'quick')
+            log(f"av_scan command received (type={scan_type}) — not implemented on Windows agent")
+
+        elif command == 'lock':
+            lock_workstation()
+
+        elif command == 'reboot':
+            os.system('shutdown /r /t 10')
+
+        elif command == 'shell':
+            cmd = payload.get('cmd', '')
+            if cmd:
+                subprocess.Popen(cmd, shell=True)
 
         else:
             raise Exception(f"Unknown command: {command}")
@@ -579,6 +685,8 @@ class LauncherWindow:
         os.environ['HOMEPATH']           = self._user_folder
         os.environ['HOMEDRIVE']          = ''
 
+        # Tell usage tracker which user is active
+        self.tracker.set_active_user(self.user_data.get('username'))
         self._build()
         self._start_threads()
 
@@ -719,14 +827,20 @@ class LauncherWindow:
             messagebox.showerror("ZeroAxis", f"Failed to launch app:\n{e}")
 
     def _logout(self):
+        self.tracker.set_active_user(None)
         self.client.logout()
         self.tracker.flush_now()
+        if hasattr(self, '_dns_tracker'):
+            self._dns_tracker.flush()
         self._restore_env()
         self.root.destroy()
 
     def _force_logout(self):
+        self.tracker.set_active_user(None)
         self.client.logout()
         self.tracker.flush_now()
+        if hasattr(self, '_dns_tracker'):
+            self._dns_tracker.flush()
         self._restore_env()
         self.root.destroy()
         lock_workstation()
@@ -746,6 +860,9 @@ class LauncherWindow:
         self.status_var.set("Syncing policies...")
 
     def _start_threads(self):
+        # DNS tracker for this session
+        self._dns_tracker = DnsTracker(self.serial)
+
         # Policy sync every 15 min
         def policy_loop():
             while True:
@@ -761,18 +878,25 @@ class LauncherWindow:
 
         # Screen time + curfew check every minute
         def time_loop():
+            tick_count = 0
             while True:
                 time.sleep(60)
+                tick_count += 1
                 self.enforcer.today_usage += 1
                 self.tracker.tick()
                 self.root.after(0, self._update_screen_time_bar)
-                # Push per-user screen time every 5 minutes
-                if self.enforcer.today_usage % 5 == 0:
+
+                # Push per-user screen time every 5 ticks using OS session minutes
+                if tick_count % 5 == 0:
+                    session_mins = self.tracker.get_session_minutes()
                     threading.Thread(
                         target=self.client.push_screen_time,
-                        args=(self.enforcer.today_usage,),
+                        args=(session_mins,),
                         daemon=True
                     ).start()
+                    # Also flush app usage
+                    threading.Thread(target=self.tracker.flush_now, daemon=True).start()
+
                 if self.enforcer.screen_time_exceeded():
                     self.root.after(0, lambda: (
                         messagebox.showwarning("ZeroAxis", "Screen time limit reached."),
@@ -786,6 +910,14 @@ class LauncherWindow:
                     ))
                     break
         threading.Thread(target=time_loop, daemon=True).start()
+
+        # DNS collection and flush loop
+        def dns_loop():
+            while True:
+                self._dns_tracker.collect()
+                self._dns_tracker.flush()
+                time.sleep(DNS_FLUSH_INTERVAL)
+        threading.Thread(target=dns_loop, daemon=True).start()
 
         # Pending messages from command thread
         def msg_loop():
@@ -866,6 +998,7 @@ class ZeroAxisClient:
 # ========== Background workers (stats + commands) ==========
 def start_background_workers(serial: str, enforcer: PolicyEnforcer):
     usage_tracker = AppUsageTracker(serial)
+    dns_tracker   = DnsTracker(serial)
     client_cmd    = ZeroAxisClient(serial)
     executor      = CommandExecutor(
         serial,
@@ -889,9 +1022,17 @@ def start_background_workers(serial: str, enforcer: PolicyEnforcer):
             usage_tracker.tick()
             usage_tracker.flush_now()
 
-    threading.Thread(target=stats_loop, daemon=True).start()
-    threading.Thread(target=cmd_loop,   daemon=True).start()
-    threading.Thread(target=usage_loop, daemon=True).start()
+    def dns_bg_loop():
+        """Collect DNS even when no user is logged in (device-level baseline)."""
+        while True:
+            dns_tracker.collect()
+            dns_tracker.flush()
+            time.sleep(DNS_FLUSH_INTERVAL)
+
+    threading.Thread(target=stats_loop,  daemon=True).start()
+    threading.Thread(target=cmd_loop,    daemon=True).start()
+    threading.Thread(target=usage_loop,  daemon=True).start()
+    threading.Thread(target=dns_bg_loop, daemon=True).start()
 
     return usage_tracker
 
