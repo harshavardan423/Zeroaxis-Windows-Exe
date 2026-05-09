@@ -941,6 +941,381 @@ class LoginWindow:
 class FileBrowserPanel:
     """Embedded file browser — renders inside a given parent Frame."""
 
+    def __init__(self, parent: tk.Frame, root_folder: str):
+        self.root_folder  = root_folder
+        self.current_path = root_folder
+        self.frame        = parent
+        self._prompt_bar  = None
+        self._pending_rename = None
+        self._clipboard   = None  # (path, 'copy'|'cut')
+        self._build()
+        self._load(root_folder)
+
+    def _file_icon(self, name: str) -> str:
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        type_map = {
+            ("png","jpg","jpeg","gif","bmp","webp","ico"): "IMG",
+            ("pdf",):                                      "PDF",
+            ("mp4","mkv","avi","mov","wmv"):               "VID",
+            ("mp3","wav","aac","flac","ogg"):              "AUD",
+            ("zip","rar","7z","tar","gz"):                 "ZIP",
+            ("docx","doc","odt"):                          "DOC",
+            ("xlsx","xls","csv"):                          "XLS",
+            ("pptx","ppt"):                                "PPT",
+            ("py","js","ts","html","css","json","xml"):    "CODE",
+            ("txt","md","log"):                            "TXT",
+        }
+        for exts, label in type_map.items():
+            if ext in exts:
+                return label
+        return "FILE"
+
+    @staticmethod
+    def _human_size(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.0f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    def _build(self):
+        f = self.frame
+        f.configure(bg=BG)
+
+        # ── Top toolbar ──
+        toolbar = tk.Frame(f, bg=BG2, height=48)
+        toolbar.pack(fill="x", side="top")
+        toolbar.pack_propagate(False)
+
+        self.back_btn = tk.Button(
+            toolbar, text="←", command=self._go_up,
+            bg=BG2, fg=TEXT, font=("Segoe UI", 14),
+            relief="flat", bd=0, cursor="hand2",
+            padx=16, pady=0,
+            activebackground=CARD, activeforeground=TEXT
+        )
+        self.back_btn.pack(side="left")
+
+        self.path_var = tk.StringVar()
+        tk.Label(
+            toolbar, textvariable=self.path_var,
+            bg=BG2, fg=TEXT2,
+            font=("Segoe UI", 10), anchor="w", padx=8
+        ).pack(side="left", fill="x", expand=True)
+
+        # Action buttons right side
+        for label, cmd, color in [
+            ("+ New Folder", self._new_folder,      "#059669"),
+            ("Rename",       self._rename_selected,  "#d97706"),
+            ("Delete",       self._delete_selected,  DANGER),
+        ]:
+            tk.Button(
+                toolbar, text=label, command=cmd,
+                bg=color, fg=TEXT, font=("Segoe UI", 9, "bold"),
+                relief="flat", bd=0, cursor="hand2",
+                padx=12, pady=0,
+                activebackground=BORDER, activeforeground=TEXT
+            ).pack(side="right", padx=2, pady=8, ipady=4)
+
+        # ── Divider ──
+        tk.Frame(f, bg=BORDER, height=1).pack(fill="x")
+
+        # ── Main area: file list ──
+        main = tk.Frame(f, bg=BG)
+        main.pack(fill="both", expand=True)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("FB.Treeview",
+                        background=BG, foreground=TEXT,
+                        fieldbackground=BG, rowheight=36,
+                        font=("Segoe UI", 10),
+                        borderwidth=0)
+        style.configure("FB.Treeview.Heading",
+                        background=BG2, foreground=TEXT2,
+                        font=("Segoe UI", 9, "bold"),
+                        borderwidth=0, relief="flat")
+        style.map("FB.Treeview",
+                  background=[("selected", ACCENT)],
+                  foreground=[("selected", TEXT)])
+
+        cols = ("icon", "name", "size", "modified")
+        self.tree = ttk.Treeview(
+            main, columns=cols,
+            show="headings", selectmode="browse",
+            style="FB.Treeview"
+        )
+        self.tree.heading("icon",     text="")
+        self.tree.heading("name",     text="Name")
+        self.tree.heading("size",     text="Size")
+        self.tree.heading("modified", text="Modified")
+        self.tree.column("icon",     width=60,  stretch=False, anchor="center")
+        self.tree.column("name",     width=300, stretch=True)
+        self.tree.column("size",     width=80,  stretch=False, anchor="e")
+        self.tree.column("modified", width=150, stretch=False)
+
+        vsb = ttk.Scrollbar(main, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+
+        self.tree.bind("<Double-1>",    self._on_double_click)
+        self.tree.bind("<Return>",      self._on_double_click)
+        self.tree.bind("<BackSpace>",   lambda e: self._go_up())
+        self.tree.bind("<Delete>",      lambda e: self._delete_selected())
+        self.tree.bind("<Button-3>",    self._on_right_click)
+
+        # ── Inline prompt area (hidden by default) ──
+        self._prompt_frame = tk.Frame(f, bg=CARD,
+                                      highlightbackground=ACCENT,
+                                      highlightthickness=1)
+        # Not packed yet — shown on demand
+
+        # ── Status bar ──
+        self.status_var = tk.StringVar(value="")
+        tk.Label(
+            f, textvariable=self.status_var,
+            bg=BG2, fg=TEXT2, font=("Segoe UI", 9),
+            anchor="w", padx=12
+        ).pack(fill="x", side="bottom", ipady=5)
+
+        # Right-click context menu
+        self._ctx_menu = tk.Menu(
+            self.tree, tearoff=0,
+            bg=CARD, fg=TEXT,
+            activebackground=ACCENT, activeforeground=TEXT,
+            relief="flat", bd=0
+        )
+        self._ctx_menu.add_command(label="Open",         command=self._open_selected)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Copy",         command=self._copy_selected)
+        self._ctx_menu.add_command(label="Cut",          command=self._cut_selected)
+        self._ctx_menu.add_command(label="Paste",        command=self._paste)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Rename",       command=self._rename_selected)
+        self._ctx_menu.add_command(label="Delete",       command=self._delete_selected)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="New Folder",   command=self._new_folder)
+
+    # ── Navigation ──────────────────────────────────────────
+
+    def _load(self, path: str):
+        try:
+            Path(path).relative_to(self.root_folder)
+        except ValueError:
+            return
+        if not os.path.isdir(path):
+            return
+        self.current_path = path
+        rel = os.path.relpath(path, self.root_folder)
+        display = "My Files" + ("" if rel == "." else
+                                 "  /  " + rel.replace(os.sep, "  /  "))
+        self.path_var.set(display)
+
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        try:
+            entries = sorted(
+                os.scandir(path),
+                key=lambda e: (not e.is_dir(), e.name.lower())
+            )
+        except PermissionError:
+            self.status_var.set("Permission denied")
+            return
+
+        count = 0
+        for entry in entries:
+            try:
+                stat  = entry.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M")
+                icon  = "DIR" if entry.is_dir() else self._file_icon(entry.name)
+                size  = "" if entry.is_dir() else self._human_size(stat.st_size)
+                self.tree.insert("", "end", iid=entry.path,
+                                 values=(icon, entry.name, size, mtime))
+                count += 1
+            except Exception:
+                pass
+
+        noun = "items" if count != 1 else "item"
+        self.status_var.set(f"{count} {noun}")
+
+    def _go_up(self):
+        parent = os.path.dirname(self.current_path)
+        self._load(parent)
+
+    def _on_double_click(self, _=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if os.path.isdir(path):
+            self._load(path)
+        else:
+            self._open_file(path)
+
+    def _on_right_click(self, event):
+        # Select row under cursor first
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+        try:
+            self._ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._ctx_menu.grab_release()
+
+    # ── File actions ────────────────────────────────────────
+
+    def _open_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if os.path.isdir(path):
+            self._load(path)
+        else:
+            self._open_file(path)
+
+    def _open_file(self, path: str):
+        try:
+            os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Cannot open file", str(e))
+
+    def _copy_selected(self):
+        sel = self.tree.selection()
+        if sel:
+            self._clipboard = (sel[0], 'copy')
+            self.status_var.set(f"Copied: {os.path.basename(sel[0])}")
+
+    def _cut_selected(self):
+        sel = self.tree.selection()
+        if sel:
+            self._clipboard = (sel[0], 'cut')
+            self.status_var.set(f"Cut: {os.path.basename(sel[0])}")
+
+    def _paste(self):
+        if not self._clipboard:
+            return
+        src, mode = self._clipboard
+        dst = os.path.join(self.current_path, os.path.basename(src))
+        try:
+            import shutil
+            if mode == 'copy':
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+            else:  # cut
+                shutil.move(src, dst)
+                self._clipboard = None
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Paste failed", str(e))
+
+    def _new_folder(self):
+        self._show_prompt("New folder name:", self._confirm_new_folder)
+
+    def _confirm_new_folder(self, name: str):
+        if not name:
+            return
+        try:
+            os.makedirs(os.path.join(self.current_path, name), exist_ok=True)
+            self._load(self.current_path)
+        except Exception as e:
+            self.status_var.set(f"Error: {e}")
+
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        name = os.path.basename(path)
+        if not messagebox.askyesno("Delete", f"Delete '{name}'?\nThis cannot be undone."):
+            return
+        try:
+            import shutil
+            shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Delete failed", str(e))
+
+    def _rename_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self._pending_rename = sel[0]
+        default = os.path.basename(sel[0])
+        self._show_prompt("Rename to:", self._confirm_rename, default=default)
+
+    def _confirm_rename(self, new_name: str):
+        old = self._pending_rename
+        if not old or not new_name:
+            return
+        new_path = os.path.join(self.current_path, new_name)
+        try:
+            os.rename(old, new_path)
+            self._load(self.current_path)
+        except Exception as e:
+            self.status_var.set(f"Error: {e}")
+
+    # ── Inline prompt ────────────────────────────────────────
+
+    def _show_prompt(self, label: str, callback, default: str = ""):
+        """Show a non-popup inline prompt bar at the bottom of the panel."""
+        self._dismiss_prompt()
+
+        bar = self._prompt_frame
+        # Clear old widgets
+        for w in bar.winfo_children():
+            w.destroy()
+
+        tk.Label(
+            bar, text=label, fg=TEXT2, bg=CARD,
+            font=("Segoe UI", 10)
+        ).pack(side="left", padx=(12, 8), pady=10)
+
+        entry = tk.Entry(
+            bar, font=("Segoe UI", 11),
+            bg=BG, fg=TEXT, insertbackground=TEXT,
+            relief="flat", bd=0,
+            highlightbackground=BORDER, highlightthickness=1
+        )
+        entry.insert(0, default)
+        entry.pack(side="left", fill="x", expand=True, ipady=7, pady=8)
+        entry.select_range(0, "end")
+        entry.focus_set()
+
+        def _ok(_=None):
+            val = entry.get().strip()
+            self._dismiss_prompt()
+            if val:
+                callback(val)
+
+        def _cancel(_=None):
+            self._dismiss_prompt()
+
+        tk.Button(
+            bar, text="OK", command=_ok,
+            bg=ACCENT, fg=TEXT, font=("Segoe UI Semibold", 10),
+            relief="flat", bd=0, padx=16, pady=6, cursor="hand2"
+        ).pack(side="left", padx=4, pady=8)
+
+        tk.Button(
+            bar, text="✕", command=_cancel,
+            bg=CARD, fg=TEXT2, font=("Segoe UI", 10),
+            relief="flat", bd=0, padx=10, pady=6, cursor="hand2"
+        ).pack(side="left", padx=(0, 8), pady=8)
+
+        entry.bind("<Return>", _ok)
+        entry.bind("<Escape>", _cancel)
+
+        # Show the prompt bar above the status bar
+        bar.pack(fill="x", side="bottom", before=self.frame.winfo_children()[-1])
+
+    def _dismiss_prompt(self):
+        self._prompt_frame.pack_forget()
+
     EXT_ICONS = {
         ("png","jpg","jpeg","gif","bmp","webp","ico"): "🖼",
         ("pdf",):                                      "📕",
