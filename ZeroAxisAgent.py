@@ -76,9 +76,8 @@ def get_user_folder(username: str) -> str:
     return folder
 
 def open_user_folder(username: str, parent_root=None):
-    """Open an in-app file browser for the user's dedicated folder."""
-    folder = get_user_folder(username)
-    FileBrowserWindow(folder, parent=parent_root)
+    """No-op — file browser is now embedded in the sidebar."""
+    pass
 
 # ========== In-app File Browser ==========
 class FileBrowserWindow:
@@ -823,6 +822,17 @@ class PolicyEnforcer:
         return self.screen_time_limit > 0 and self.today_usage >= self.screen_time_limit
 
 # ========== Login window ==========
+BG        = "#0f1117"
+BG2       = "#181c27"
+CARD      = "#1e2336"
+ACCENT    = "#3b82f6"
+ACCENT2   = "#1d4ed8"
+BORDER    = "#2a3048"
+TEXT      = "#f1f5f9"
+TEXT2     = "#94a3b8"
+SUCCESS   = "#10b981"
+DANGER    = "#ef4444"
+
 class LoginWindow:
     def __init__(self, client, on_success):
         self.client     = client
@@ -830,39 +840,73 @@ class LoginWindow:
         self.root       = tk.Tk()
         self.root.title("ZeroAxis")
         self.root.attributes("-fullscreen", True)
-        self.root.configure(bg="#1a1a2e")
-        self.root.protocol("WM_DELETE_WINDOW", lambda: None)  # prevent close
+        self.root.configure(bg=BG)
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         self._build()
 
     def _build(self):
-        frame = tk.Frame(self.root, bg="#1a1a2e")
-        frame.place(relx=0.5, rely=0.5, anchor="center")
+        # Full-screen canvas background
+        canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0)
+        canvas.place(relwidth=1, relheight=1)
+        # Subtle grid lines
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        for x in range(0, sw, 80):
+            canvas.create_line(x, 0, x, sh, fill="#1a2035", width=1)
+        for y in range(0, sh, 80):
+            canvas.create_line(0, y, sw, y, fill="#1a2035", width=1)
 
-        tk.Label(frame, text="ZeroAxis", font=("Arial", 28, "bold"),
-                 fg="white", bg="#1a1a2e").pack(pady=(0, 4))
-        tk.Label(frame, text="Sign in to continue", font=("Arial", 11),
-                 fg="#aaa", bg="#1a1a2e").pack(pady=(0, 24))
+        # Center card
+        card = tk.Frame(self.root, bg=CARD, bd=0, highlightbackground=BORDER,
+                        highlightthickness=1)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=420)
 
-        tk.Label(frame, text="Username", fg="white",
-                 bg="#1a1a2e", font=("Arial", 10)).pack(anchor="w")
-        self.username = tk.Entry(frame, width=32, font=("Arial", 13))
-        self.username.pack(pady=(2, 12))
+        # Top accent bar
+        accent_bar = tk.Frame(card, bg=ACCENT, height=4)
+        accent_bar.pack(fill="x")
+
+        inner = tk.Frame(card, bg=CARD)
+        inner.pack(fill="both", padx=40, pady=36)
+
+        # Logo / wordmark
+        logo_frame = tk.Frame(inner, bg=CARD)
+        logo_frame.pack(pady=(0, 32))
+        tk.Label(logo_frame, text="◈", font=("Segoe UI", 26),
+                 fg=ACCENT, bg=CARD).pack()
+        tk.Label(logo_frame, text="ZeroAxis", font=("Segoe UI Semibold", 22),
+                 fg=TEXT, bg=CARD).pack()
+        tk.Label(logo_frame, text="Device Management", font=("Segoe UI", 10),
+                 fg=TEXT2, bg=CARD).pack()
+
+        # Fields
+        def make_field(parent, label):
+            tk.Label(parent, text=label, font=("Segoe UI", 9),
+                     fg=TEXT2, bg=CARD, anchor="w").pack(fill="x", pady=(0, 4))
+            e = tk.Entry(parent, font=("Segoe UI", 13), bg=BG2,
+                         fg=TEXT, insertbackground=TEXT,
+                         relief="flat", bd=0,
+                         highlightbackground=BORDER,
+                         highlightthickness=1,
+                         highlightcolor=ACCENT)
+            e.pack(fill="x", ipady=10, pady=(0, 18))
+            return e
+
+        self.username = make_field(inner, "USERNAME")
+        self.pin = make_field(inner, "PIN")
+        self.pin.config(show="●")
         self.username.focus()
 
-        tk.Label(frame, text="PIN", fg="white",
-                 bg="#1a1a2e", font=("Arial", 10)).pack(anchor="w")
-        self.pin = tk.Entry(frame, width=32, font=("Arial", 13), show="●")
-        self.pin.pack(pady=(2, 20))
+        # Login button
+        self.btn = tk.Button(inner, text="Sign In", command=self._login,
+                             bg=ACCENT, fg=TEXT,
+                             font=("Segoe UI Semibold", 12),
+                             relief="flat", bd=0, cursor="hand2",
+                             activebackground=ACCENT2, activeforeground=TEXT)
+        self.btn.pack(fill="x", ipady=12)
 
-        self.btn = tk.Button(frame, text="Login", command=self._login,
-                             bg="#206bc4", fg="white", font=("Arial", 12, "bold"),
-                             relief="flat", padx=20, pady=8, cursor="hand2",
-                             activebackground="#1a5aad", activeforeground="white")
-        self.btn.pack(fill="x")
-
-        self.status = tk.Label(frame, text="", fg="#e74c3c",
-                               bg="#1a1a2e", font=("Arial", 10))
-        self.status.pack(pady=(10, 0))
+        self.status = tk.Label(inner, text="", fg=DANGER,
+                               bg=CARD, font=("Segoe UI", 10))
+        self.status.pack(pady=(14, 0))
 
         self.username.bind("<Return>", lambda e: self.pin.focus())
         self.pin.bind("<Return>",      lambda e: self._login())
@@ -871,9 +915,9 @@ class LoginWindow:
         u = self.username.get().strip()
         p = self.pin.get().strip()
         if not u:
-            self.status.config(text="Username required")
+            self.status.config(text="Username is required")
             return
-        self.btn.config(state="disabled", text="Signing in...")
+        self.btn.config(state="disabled", text="Signing in…")
         self.status.config(text="")
         self.root.update()
         threading.Thread(target=self._do_auth, args=(u, p), daemon=True).start()
@@ -883,7 +927,7 @@ class LoginWindow:
         self.root.after(0, lambda: self._auth_done(result))
 
     def _auth_done(self, result):
-        self.btn.config(state="normal", text="Login")
+        self.btn.config(state="normal", text="Sign In")
         if result and result.get('success'):
             self.root.destroy()
             self.on_success(result)
@@ -893,8 +937,292 @@ class LoginWindow:
     def run(self):
         self.root.mainloop()
 
+# ========== In-app File Browser (panel, not popup) ==========
+class FileBrowserPanel:
+    """Embedded file browser — renders inside a given parent Frame."""
+
+    EXT_ICONS = {
+        ("png","jpg","jpeg","gif","bmp","webp","ico"): "🖼",
+        ("pdf",):                                      "📕",
+        ("mp4","mkv","avi","mov","wmv"):               "🎬",
+        ("mp3","wav","aac","flac","ogg"):              "🎵",
+        ("zip","rar","7z","tar","gz"):                 "🗜",
+        ("docx","doc","odt"):                          "📝",
+        ("xlsx","xls","csv"):                          "📊",
+        ("pptx","ppt"):                                "📋",
+        ("py","js","ts","html","css","json","xml"):    "💻",
+        ("txt","md","log"):                            "📃",
+    }
+
+    def __init__(self, parent: tk.Frame, root_folder: str):
+        self.root_folder  = root_folder
+        self.current_path = root_folder
+        self.frame        = parent
+        self._build()
+        self._load(root_folder)
+
+    def _file_icon(self, name: str) -> str:
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        type_map = {
+            ("png","jpg","jpeg","gif","bmp","webp","ico"): "IMG",
+            ("pdf",):                                      "PDF",
+            ("mp4","mkv","avi","mov","wmv"):               "VID",
+            ("mp3","wav","aac","flac","ogg"):              "AUD",
+            ("zip","rar","7z","tar","gz"):                 "ZIP",
+            ("docx","doc","odt"):                          "DOC",
+            ("xlsx","xls","csv"):                          "XLS",
+            ("pptx","ppt"):                                "PPT",
+            ("py","js","ts","html","css","json","xml"):    "CODE",
+            ("txt","md","log"):                            "TXT",
+        }
+        for exts, label in type_map.items():
+            if ext in exts:
+                return label
+        return "FILE"
+
+    @staticmethod
+    def _human_size(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.0f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    def _build(self):
+        f = self.frame
+        f.configure(bg=BG2)
+
+        # ── Breadcrumb / toolbar row ──
+        toolbar = tk.Frame(f, bg=BG2)
+        toolbar.pack(fill="x", padx=0, pady=0)
+
+        self.back_btn = tk.Button(toolbar, text="←", command=self._go_up,
+                                  bg=CARD, fg=TEXT, font=("Segoe UI", 13),
+                                  relief="flat", bd=0, cursor="hand2",
+                                  padx=12, pady=6,
+                                  activebackground=BORDER, activeforeground=TEXT)
+        self.back_btn.pack(side="left", padx=(0, 1))
+
+        self.path_var = tk.StringVar()
+        path_label = tk.Label(toolbar, textvariable=self.path_var,
+                              bg=CARD, fg=TEXT2,
+                              font=("Segoe UI", 10), anchor="w", padx=12)
+        path_label.pack(side="left", fill="x", expand=True, ipady=8)
+
+        for label, cmd, color in [
+            ("+ Folder", self._new_folder, "#059669"),
+            ("Rename",   self._rename_selected, "#d97706"),
+            ("Delete",   self._delete_selected, DANGER),
+        ]:
+            tk.Button(toolbar, text=label, command=cmd,
+                      bg=color, fg=TEXT, font=("Segoe UI", 9),
+                      relief="flat", bd=0, cursor="hand2",
+                      padx=10, pady=6,
+                      activebackground=BORDER, activeforeground=TEXT
+                      ).pack(side="right", padx=(1, 0))
+
+        # ── File list ──
+        list_frame = tk.Frame(f, bg=BG2)
+        list_frame.pack(fill="both", expand=True)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("FB.Treeview",
+                        background=BG2, foreground=TEXT,
+                        fieldbackground=BG2, rowheight=32,
+                        font=("Segoe UI", 10),
+                        borderwidth=0)
+        style.configure("FB.Treeview.Heading",
+                        background=CARD, foreground=TEXT2,
+                        font=("Segoe UI", 9),
+                        borderwidth=0, relief="flat")
+        style.map("FB.Treeview",
+                  background=[("selected", ACCENT)],
+                  foreground=[("selected", TEXT)])
+
+        cols = ("icon", "name", "size", "modified")
+        self.tree = ttk.Treeview(list_frame, columns=cols,
+                                 show="headings", selectmode="browse",
+                                 style="FB.Treeview")
+        self.tree.heading("icon",     text="")
+        self.tree.heading("name",     text="Name")
+        self.tree.heading("size",     text="Size")
+        self.tree.heading("modified", text="Modified")
+        self.tree.column("icon",     width=50,  stretch=False, anchor="center")
+        self.tree.column("name",     width=260, stretch=True)
+        self.tree.column("size",     width=80,  stretch=False, anchor="e")
+        self.tree.column("modified", width=140, stretch=False)
+
+        vsb = ttk.Scrollbar(list_frame, orient="vertical",
+                            command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+
+        self.tree.bind("<Double-1>", self._on_double_click)
+        self.tree.bind("<Return>",   self._on_double_click)
+
+        # ── Status bar ──
+        self.status_var = tk.StringVar(value="")
+        tk.Label(f, textvariable=self.status_var,
+                 bg=CARD, fg=TEXT2, font=("Segoe UI", 9),
+                 anchor="w", padx=10).pack(fill="x", side="bottom", ipady=4)
+
+    def _load(self, path: str):
+        try:
+            Path(path).relative_to(self.root_folder)
+        except ValueError:
+            return
+        if not os.path.isdir(path):
+            return
+        self.current_path = path
+        rel = os.path.relpath(path, self.root_folder)
+        display = "My Files" + ("" if rel == "." else
+                                 "  /  " + rel.replace(os.sep, "  /  "))
+        self.path_var.set(display)
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        try:
+            entries = sorted(os.scandir(path),
+                             key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            self.status_var.set("Permission denied")
+            return
+        count = 0
+        for entry in entries:
+            try:
+                stat  = entry.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M")
+                icon  = "DIR" if entry.is_dir() else self._file_icon(entry.name)
+                size  = "" if entry.is_dir() else self._human_size(stat.st_size)
+                self.tree.insert("", "end", iid=entry.path,
+                                 values=(icon, entry.name, size, mtime))
+                count += 1
+            except Exception:
+                pass
+        self.status_var.set(f"{count} item(s)")
+
+    def _go_up(self):
+        self._load(os.path.dirname(self.current_path))
+
+    def _on_double_click(self, _=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if os.path.isdir(path):
+            self._load(path)
+        else:
+            try:
+                os.startfile(path)
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def _new_folder(self):
+        self._inline_prompt("New folder name:", self._confirm_new_folder)
+
+    def _confirm_new_folder(self, name: str):
+        if not name:
+            return
+        try:
+            os.makedirs(os.path.join(self.current_path, name), exist_ok=True)
+            self._load(self.current_path)
+        except Exception as e:
+            self._show_inline_error(str(e))
+
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if not messagebox.askyesno("Delete", f"Delete '{os.path.basename(path)}'?"):
+            return
+        try:
+            import shutil
+            shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _rename_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self._pending_rename = sel[0]
+        default = os.path.basename(sel[0])
+        self._inline_prompt(f"Rename to:", self._confirm_rename, default=default)
+
+    def _confirm_rename(self, new_name: str):
+        old = getattr(self, '_pending_rename', None)
+        if not old or not new_name:
+            return
+        try:
+            os.rename(old, os.path.join(self.current_path, new_name))
+            self._load(self.current_path)
+        except Exception as e:
+            self._show_inline_error(str(e))
+
+    def _inline_prompt(self, label: str, callback, default: str = ""):
+        """Show an inline prompt bar inside the panel — no popup window."""
+        # Remove any existing prompt bar
+        self._dismiss_inline_prompt()
+
+        bar = tk.Frame(self.frame, bg=CARD,
+                       highlightbackground=ACCENT, highlightthickness=1)
+        bar.pack(fill="x", side="bottom")
+        self._prompt_bar = bar
+
+        tk.Label(bar, text=label, fg=TEXT2, bg=CARD,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(12, 8), pady=10)
+
+        entry = tk.Entry(bar, font=("Segoe UI", 11),
+                         bg=BG2, fg=TEXT, insertbackground=TEXT,
+                         relief="flat", bd=0,
+                         highlightbackground=BORDER, highlightthickness=1)
+        entry.insert(0, default)
+        entry.pack(side="left", fill="x", expand=True, ipady=6, pady=8)
+        entry.select_range(0, "end")
+        entry.focus()
+
+        def _ok(_=None):
+            val = entry.get().strip()
+            self._dismiss_inline_prompt()
+            callback(val)
+
+        def _cancel(_=None):
+            self._dismiss_inline_prompt()
+
+        tk.Button(bar, text="OK", command=_ok,
+                  bg=ACCENT, fg=TEXT, font=("Segoe UI Semibold", 10),
+                  relief="flat", bd=0, padx=14, pady=6,
+                  cursor="hand2").pack(side="left", padx=4, pady=8)
+        tk.Button(bar, text="✕", command=_cancel,
+                  bg=CARD, fg=TEXT2, font=("Segoe UI", 10),
+                  relief="flat", bd=0, padx=10, pady=6,
+                  cursor="hand2").pack(side="left", padx=(0, 8), pady=8)
+
+        entry.bind("<Return>", _ok)
+        entry.bind("<Escape>", _cancel)
+
+    def _dismiss_inline_prompt(self):
+        bar = getattr(self, '_prompt_bar', None)
+        if bar and bar.winfo_exists():
+            bar.destroy()
+        self._prompt_bar = None
+
+    def _show_inline_error(self, msg: str):
+        self.status_var.set(f"Error: {msg}")
+
+
 # ========== Launcher window ==========
 class LauncherWindow:
+    """Full-screen launcher with sidebar navigation and embedded panels."""
+
+    NAV_ITEMS = [
+        ("apps",  "Apps",     "⊞"),
+        ("files", "My Files", "📁"),
+    ]
+
     def __init__(self, client, user_data: dict, enforcer: PolicyEnforcer,
                  usage_tracker: AppUsageTracker, serial: str):
         self.client        = client
@@ -902,98 +1230,221 @@ class LauncherWindow:
         self.enforcer      = enforcer
         self.tracker       = usage_tracker
         self.serial        = serial
-        self.root          = tk.Tk()
-        self.root.title("ZeroAxis Launcher")
+        self._active_nav   = "apps"
+        self._panels: dict = {}
+        self._file_panel: Optional[FileBrowserPanel] = None
+
+        self.root = tk.Tk()
+        self.root.title("ZeroAxis")
         self.root.attributes("-fullscreen", True)
-        self.root.configure(bg="#1a1a2e")
+        self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
-        # Set USERPROFILE-equivalent env vars so launched apps default to user folder
+
         username = self.user_data.get('username', '')
         self._user_folder = get_user_folder(username)
         os.environ['ZEROAXIS_USER_HOME'] = self._user_folder
-        os.environ['USERPROFILE']        = self._user_folder
-        os.environ['HOMEPATH']           = self._user_folder
-        os.environ['HOMEDRIVE']          = ''
 
-        # Tell usage tracker which user is active
-        self.tracker.set_active_user(self.user_data.get('username'))
+        self.tracker.set_active_user(username)
         self._build()
         self._start_threads()
 
+    # ──────────────────────────────────────────────
+    #  Layout
+    # ──────────────────────────────────────────────
     def _build(self):
+        # Root grid: sidebar | content
+        self.root.columnconfigure(1, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self._build_sidebar()
+        self._build_content_area()
+
+    def _build_sidebar(self):
+        sb = tk.Frame(self.root, bg=BG2, width=200)
+        sb.grid(row=0, column=0, sticky="ns")
+        sb.grid_propagate(False)
+        sb.pack_propagate(False)
+
+        # Logo
+        logo = tk.Frame(sb, bg=BG2)
+        logo.pack(fill="x", pady=(28, 24), padx=20)
+        tk.Label(logo, text="◈  ZeroAxis", font=("Segoe UI Semibold", 14),
+                 fg=TEXT, bg=BG2).pack(anchor="w")
+
+        # User chip
+        uname = self.user_data.get('username', '')
+        chip = tk.Frame(sb, bg=CARD)
+        chip.pack(fill="x", padx=12, pady=(0, 24))
+        tk.Label(chip, text=uname[0].upper() if uname else "?",
+                 font=("Segoe UI Semibold", 14),
+                 fg=ACCENT, bg=CARD, width=3).pack(side="left", ipady=10)
+        tk.Label(chip, text=uname, font=("Segoe UI", 11),
+                 fg=TEXT, bg=CARD, anchor="w").pack(side="left", fill="x", expand=True)
+
+        # Divider
+        tk.Frame(sb, bg=BORDER, height=1).pack(fill="x", padx=12, pady=(0, 12))
+
+        # Nav buttons
+        self._nav_btns = {}
+        for key, label, icon in self.NAV_ITEMS:
+            btn = tk.Button(
+                sb,
+                text=f"  {icon}   {label}",
+                command=lambda k=key: self._switch_nav(k),
+                font=("Segoe UI", 11), anchor="w",
+                relief="flat", bd=0, cursor="hand2",
+                padx=16, pady=10,
+            )
+            btn.pack(fill="x", padx=8, pady=2)
+            self._nav_btns[key] = btn
+
+        # Screen time block
+        self.st_frame = tk.Frame(sb, bg=BG2)
+        self.st_frame.pack(fill="x", padx=12, pady=(20, 0))
+        self.st_label = tk.Label(self.st_frame, text="", font=("Segoe UI", 9),
+                                 fg=TEXT2, bg=BG2, justify="left", anchor="w")
+        self.st_label.pack(fill="x")
+        self.st_bar_bg = tk.Frame(self.st_frame, bg=BORDER, height=4)
+        self.st_bar_bg.pack(fill="x", pady=(4, 0))
+        self.st_bar_fg = tk.Frame(self.st_bar_bg, bg=ACCENT, height=4)
+        self.st_bar_fg.place(relwidth=0, relheight=1)
+
+        # Bottom: refresh + logout
+        bottom = tk.Frame(sb, bg=BG2)
+        bottom.pack(side="bottom", fill="x", padx=12, pady=16)
+
+        tk.Button(bottom, text="⟳  Refresh",
+                  command=self._sync_and_refresh,
+                  font=("Segoe UI", 10), anchor="w",
+                  bg=BG2, fg=TEXT2, relief="flat", bd=0,
+                  cursor="hand2", padx=12, pady=8,
+                  activebackground=CARD, activeforeground=TEXT
+                  ).pack(fill="x", pady=(0, 4))
+
+        tk.Button(bottom, text="Logout",
+                  command=self._logout,
+                  font=("Segoe UI", 10), anchor="w",
+                  bg=BG2, fg=DANGER, relief="flat", bd=0,
+                  cursor="hand2", padx=12, pady=8,
+                  activebackground=CARD, activeforeground=DANGER
+                  ).pack(fill="x")
+
+        self._update_nav_style()
+
+    def _build_content_area(self):
+        self._content = tk.Frame(self.root, bg=BG)
+        self._content.grid(row=0, column=1, sticky="nsew")
+        self._content.columnconfigure(0, weight=1)
+        self._content.rowconfigure(1, weight=1)
+
         # Top bar
-        top = tk.Frame(self.root, bg="#206bc4", height=48)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        tk.Label(top, text=f"Welcome, {self.user_data.get('username', '')}",
-                 fg="white", bg="#206bc4",
-                 font=("Arial", 13, "bold")).pack(side="left", padx=16)
-        tk.Button(top, text="Logout", command=self._logout,
-                  bg="#dc3545", fg="white", font=("Arial", 10),
-                  relief="flat", padx=12, cursor="hand2").pack(side="right", padx=12, pady=8)
-        tk.Button(top, text="⟳ Refresh", command=self._sync_and_refresh,
-                  bg="#444", fg="white", font=("Arial", 10),
-                  relief="flat", padx=10, cursor="hand2").pack(side="right", pady=8)
+        topbar = tk.Frame(self._content, bg=BG2, height=56)
+        topbar.grid(row=0, column=0, sticky="ew")
+        topbar.grid_propagate(False)
+        self._topbar_title = tk.Label(topbar, text="Apps",
+                                      font=("Segoe UI Semibold", 16),
+                                      fg=TEXT, bg=BG2)
+        self._topbar_title.pack(side="left", padx=24, pady=16)
 
-        # Quick launch buttons (browser + docs)
-        self.quick_frame = tk.Frame(self.root, bg="#1a1a2e")
-        self.quick_frame.pack(fill="x", padx=16, pady=(10, 0))
-
-        # Screen time bar
-        self.time_var = tk.StringVar(value="")
-        tk.Label(self.root, textvariable=self.time_var,
-                 bg="#1a1a2e", fg="#aaa", font=("Arial", 10)).pack(pady=(4, 0))
-        self.progress = ttk.Progressbar(self.root, length=400, mode='determinate')
-        self.progress.pack(pady=(2, 8))
-
-        # Apps grid
-        self.apps_frame = tk.Frame(self.root, bg="#1a1a2e")
-        self.apps_frame.pack(fill="both", expand=True, padx=24, pady=8)
-
-        # Status bar
         self.status_var = tk.StringVar(value="")
-        tk.Label(self.root, textvariable=self.status_var,
-                 bg="#222", fg="#aaa", font=("Arial", 9),
-                 anchor="w").pack(side="bottom", fill="x", padx=8)
+        tk.Label(topbar, textvariable=self.status_var,
+                 fg=TEXT2, bg=BG2, font=("Segoe UI", 10)
+                 ).pack(side="right", padx=24)
 
-        self._refresh_ui()
+        # Panel container
+        self._panel_container = tk.Frame(self._content, bg=BG)
+        self._panel_container.grid(row=1, column=0, sticky="nsew")
+        self._panel_container.columnconfigure(0, weight=1)
+        self._panel_container.rowconfigure(0, weight=1)
 
-    def _refresh_ui(self):
+        self._build_apps_panel()
+        self._build_files_panel()
+        self._switch_nav("apps")
+
+    def _build_apps_panel(self):
+        panel = tk.Frame(self._panel_container, bg=BG)
+        self._panels["apps"] = panel
+
+        # Quick-launch row (browser + docs)
+        self._quick_frame = tk.Frame(panel, bg=BG)
+        self._quick_frame.pack(fill="x", padx=28, pady=(20, 0))
+
+        # Scrollable app grid
+        outer = tk.Frame(panel, bg=BG)
+        outer.pack(fill="both", expand=True, padx=28, pady=16)
+
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        self._apps_inner = tk.Frame(canvas, bg=BG)
+        self._apps_window = canvas.create_window((0, 0), window=self._apps_inner,
+                                                  anchor="nw")
+
+        def _on_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(self._apps_window, width=canvas.winfo_width())
+
+        self._apps_inner.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(self._apps_window,
+                                                width=e.width))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(
+                            int(-1 * (e.delta / 120)), "units"))
+
+        self._apps_canvas  = canvas
+        self._refresh_apps_panel()
+
+    def _build_files_panel(self):
+        panel = tk.Frame(self._panel_container, bg=BG2)
+        self._panels["files"] = panel
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(0, weight=1)
+
+        file_frame = tk.Frame(panel, bg=BG2)
+        file_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        file_frame.columnconfigure(0, weight=1)
+        file_frame.rowconfigure(0, weight=1)
+
+        username = self.user_data.get('username', '')
+        self._file_panel = FileBrowserPanel(file_frame, self._user_folder)
+
+    # ──────────────────────────────────────────────
+    #  Apps panel helpers
+    # ──────────────────────────────────────────────
+    def _refresh_apps_panel(self):
         self._build_quick_buttons()
         self._build_app_grid()
-        self._update_screen_time_bar()
 
     def _build_quick_buttons(self):
-        for w in self.quick_frame.winfo_children():
+        for w in self._quick_frame.winfo_children():
             w.destroy()
-        browser  = self.enforcer.allowed_browser
-        docs     = self.enforcer.allowed_document_viewer
-        username = self.user_data.get('username', '')
-        if browser:
-            tk.Button(self.quick_frame, text="🌐 Browser",
-                      command=lambda: self._launch(browser),
-                      bg="#2E86AB", fg="white", font=("Arial", 10),
-                      relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left", padx=(0, 8))
-        if docs:
-            tk.Button(self.quick_frame, text="📄 Documents",
-                      command=lambda: self._launch(docs),
-                      bg="#2E86AB", fg="white", font=("Arial", 10),
-                      relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left", padx=(0, 8))
-        # Always show My Files — opens this user's dedicated folder
-        tk.Button(self.quick_frame, text="📁 My Files",
-                  command=lambda: open_user_folder(username, self.root),
-                  bg="#5c636a", fg="white", font=("Arial", 10),
-                  relief="flat", padx=14, pady=6,
-                  cursor="hand2").pack(side="left")
+        browser = self.enforcer.allowed_browser
+        docs    = self.enforcer.allowed_document_viewer
+
+        for label, entry, color in [
+            ("🌐  Browser",   browser, "#0ea5e9"),
+            ("📄  Documents", docs,    "#8b5cf6"),
+        ]:
+            if entry:
+                tk.Button(
+                    self._quick_frame, text=label,
+                    command=lambda e=entry: self._launch(e),
+                    font=("Segoe UI", 10),
+                    bg=color, fg=TEXT,
+                    relief="flat", bd=0, cursor="hand2",
+                    padx=16, pady=8,
+                    activebackground=BG2, activeforeground=TEXT
+                ).pack(side="left", padx=(0, 10))
 
     def _build_app_grid(self):
-        for w in self.apps_frame.winfo_children():
+        for w in self._apps_inner.winfo_children():
             w.destroy()
 
         apps = self.enforcer.allowed_apps
-        # Filter to only entries that resolve on this platform
         resolved = []
         for entry in apps:
             path = resolve_app_path(entry)
@@ -1001,45 +1452,103 @@ class LauncherWindow:
                 resolved.append((get_app_display_name(entry), path))
 
         if not resolved:
-            tk.Label(self.apps_frame,
+            tk.Label(self._apps_inner,
                      text="No apps configured for this device.\nContact your administrator.",
-                     fg="white", bg="#1a1a2e",
-                     font=("Arial", 14)).pack(expand=True)
+                     fg=TEXT2, bg=BG,
+                     font=("Segoe UI", 14)).pack(expand=True, pady=60)
             return
 
-        cols = 4
+        COLS      = 5
+        CARD_W    = 148
+        CARD_H    = 100
+        ICON_SIZE = 22
+
         for idx, (display_name, path) in enumerate(resolved):
-            r, c = divmod(idx, cols)
-            btn = tk.Button(
-                self.apps_frame,
-                text=display_name,
-                command=lambda p=path: self._launch(p),
-                bg="#2563eb", fg="white",
-                font=("Arial", 12), width=18, height=2,
-                relief="flat", cursor="hand2",
-                activebackground="#1a4ec4"
-            )
-            btn.grid(row=r, column=c, padx=10, pady=10, sticky="nsew")
+            r, c = divmod(idx, COLS)
 
-        for c in range(cols):
-            self.apps_frame.columnconfigure(c, weight=1)
-        rows_count = (len(resolved) - 1) // cols + 1
-        for r in range(rows_count):
-            self.apps_frame.rowconfigure(r, weight=1)
+            card = tk.Frame(self._apps_inner, bg=CARD, width=CARD_W, height=CARD_H,
+                            highlightbackground=BORDER, highlightthickness=1)
+            card.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
+            card.grid_propagate(False)
 
+            # App initial letter as icon stand-in
+            initial = display_name[0].upper() if display_name else "?"
+            icon_lbl = tk.Label(card, text=initial,
+                                font=("Segoe UI Semibold", ICON_SIZE),
+                                fg=ACCENT, bg=CARD)
+            icon_lbl.pack(pady=(20, 4))
+
+            name_lbl = tk.Label(card, text=display_name,
+                                font=("Segoe UI", 9),
+                                fg=TEXT2, bg=CARD,
+                                wraplength=CARD_W - 16)
+            name_lbl.pack()
+
+            # Hover effect + click
+            def _enter(e, f=card):
+                f.configure(bg=BORDER, highlightbackground=ACCENT)
+                for child in f.winfo_children():
+                    child.configure(bg=BORDER)
+
+            def _leave(e, f=card):
+                f.configure(bg=CARD, highlightbackground=BORDER)
+                for child in f.winfo_children():
+                    child.configure(bg=CARD)
+
+            def _click(e=None, p=path):
+                self._launch(p)
+
+            for widget in (card, icon_lbl, name_lbl):
+                widget.bind("<Enter>",  _enter)
+                widget.bind("<Leave>",  _leave)
+                widget.bind("<Button-1>", _click)
+                widget.configure(cursor="hand2")
+
+        for col in range(COLS):
+            self._apps_inner.columnconfigure(col, weight=1)
+
+    # ──────────────────────────────────────────────
+    #  Navigation
+    # ──────────────────────────────────────────────
+    def _switch_nav(self, key: str):
+        self._active_nav = key
+        for k, panel in self._panels.items():
+            panel.grid_forget()
+        self._panels[key].grid(row=0, column=0, sticky="nsew",
+                               in_=self._panel_container)
+        titles = {"apps": "Apps", "files": "My Files"}
+        self._topbar_title.config(text=titles.get(key, ""))
+        self._update_nav_style()
+
+    def _update_nav_style(self):
+        for key, btn in self._nav_btns.items():
+            if key == self._active_nav:
+                btn.config(bg=ACCENT, fg=TEXT, activebackground=ACCENT2)
+            else:
+                btn.config(bg=BG2, fg=TEXT2, activebackground=CARD,
+                           activeforeground=TEXT)
+
+    # ──────────────────────────────────────────────
+    #  Screen time bar
+    # ──────────────────────────────────────────────
     def _update_screen_time_bar(self):
         limit = self.enforcer.screen_time_limit
         used  = self.enforcer.today_usage
         if limit > 0:
             remaining = max(0, limit - used)
-            pct = min(100, int(used * 100 / limit))
-            self.time_var.set(f"Screen time: {used} min used / {limit} min limit  ({remaining} min remaining)")
-            self.progress['value'] = pct
-            self.progress.pack()
+            pct = min(1.0, used / limit)
+            self.st_label.config(
+                text=f"Screen time\n{used} min used · {remaining} min left")
+            self.st_bar_fg.place(relwidth=pct, relheight=1)
+            # Turn bar red when > 80%
+            self.st_bar_fg.config(bg=DANGER if pct > 0.8 else ACCENT)
         else:
-            self.time_var.set(f"Screen time: {used} min (no limit)")
-            self.progress.pack_forget()
+            self.st_label.config(text=f"Screen time\n{used} min (no limit)")
+            self.st_bar_fg.place(relwidth=0, relheight=1)
 
+    # ──────────────────────────────────────────────
+    #  App launch
+    # ──────────────────────────────────────────────
     def _launch(self, app_path: str):
         if self.enforcer.screen_time_exceeded():
             messagebox.showwarning("ZeroAxis", "Daily screen time limit reached.")
@@ -1056,12 +1565,13 @@ class LauncherWindow:
         except Exception as e:
             messagebox.showerror("ZeroAxis", f"Failed to launch app:\n{e}")
 
+    # ──────────────────────────────────────────────
+    #  Logout / sync
+    # ──────────────────────────────────────────────
     def _logout(self):
         self.tracker.set_active_user(None)
         self.client.logout()
         self.tracker.flush_now()
-        if hasattr(self, '_dns_tracker'):
-            self._dns_tracker.flush()
         self._restore_env()
         self.root.destroy()
 
@@ -1069,31 +1579,30 @@ class LauncherWindow:
         self.tracker.set_active_user(None)
         self.client.logout()
         self.tracker.flush_now()
-        if hasattr(self, '_dns_tracker'):
-            self._dns_tracker.flush()
         self._restore_env()
         self.root.destroy()
         lock_workstation()
 
     def _restore_env(self):
-        """Clear user-specific env overrides so next login gets a clean state."""
-        for key in ('ZEROAXIS_USER_HOME', 'USERPROFILE', 'HOMEPATH', 'HOMEDRIVE'):
-            os.environ.pop(key, None)
+        os.environ.pop('ZEROAXIS_USER_HOME', None)
 
     def _sync_and_refresh(self):
         def _sync():
             pol = self.client.sync_policy()
             if pol:
                 self.enforcer.apply(pol)
-                self.root.after(0, self._refresh_ui)
+                self.root.after(0, self._refresh_apps_panel)
+                self.root.after(0, self._update_screen_time_bar)
         threading.Thread(target=_sync, daemon=True).start()
-        self.status_var.set("Syncing policies...")
+        self.status_var.set("Syncing…")
+        self.root.after(3000, lambda: self.status_var.set(""))
 
+    # ──────────────────────────────────────────────
+    #  Background threads
+    # ──────────────────────────────────────────────
     def _start_threads(self):
-        # DNS tracker for this session
         self._dns_tracker = DnsTracker(self.serial)
 
-        # Policy sync every 15 min
         def policy_loop():
             while True:
                 time.sleep(POLICY_INTERVAL)
@@ -1101,47 +1610,39 @@ class LauncherWindow:
                     pol = self.client.sync_policy()
                     if pol:
                         self.enforcer.apply(pol)
-                        self.root.after(0, self._refresh_ui)
+                        self.root.after(0, self._refresh_apps_panel)
+                        self.root.after(0, self._update_screen_time_bar)
                 except Exception as e:
                     log(f"Policy sync error: {e}", 'error')
         threading.Thread(target=policy_loop, daemon=True).start()
 
-        # Screen time + curfew check every minute
         def time_loop():
-            tick_count = 0
+            tick = 0
             while True:
                 time.sleep(60)
-                tick_count += 1
+                tick += 1
                 self.enforcer.today_usage += 1
                 self.tracker.tick()
                 self.root.after(0, self._update_screen_time_bar)
-
-                # Push per-user screen time every 5 ticks using OS session minutes
-                if tick_count % 5 == 0:
-                    session_mins = self.tracker.get_session_minutes()
+                if tick % 5 == 0:
+                    sm = self.tracker.get_session_minutes()
                     threading.Thread(
                         target=self.client.push_screen_time,
-                        args=(session_mins,),
-                        daemon=True
-                    ).start()
-                    # Also flush app usage
-                    threading.Thread(target=self.tracker.flush_now, daemon=True).start()
-
+                        args=(sm,), daemon=True).start()
+                    threading.Thread(
+                        target=self.tracker.flush_now, daemon=True).start()
                 if self.enforcer.screen_time_exceeded():
                     self.root.after(0, lambda: (
                         messagebox.showwarning("ZeroAxis", "Screen time limit reached."),
-                        self._force_logout()
-                    ))
+                        self._force_logout()))
                     break
                 if self.enforcer.is_curfew_active():
                     self.root.after(0, lambda: (
                         messagebox.showwarning("ZeroAxis", "Curfew active. Device locked."),
-                        self._force_logout()
-                    ))
+                        self._force_logout()))
                     break
         threading.Thread(target=time_loop, daemon=True).start()
 
-        # DNS collection and flush loop
         def dns_loop():
             while True:
                 self._dns_tracker.collect()
@@ -1149,13 +1650,14 @@ class LauncherWindow:
                 time.sleep(DNS_FLUSH_INTERVAL)
         threading.Thread(target=dns_loop, daemon=True).start()
 
-        # Pending messages from command thread
         def msg_loop():
             while True:
                 time.sleep(1)
                 if _pending_messages:
                     msg = _pending_messages.pop(0)
-                    self.root.after(0, lambda m=msg: messagebox.showinfo("Message from Administrator", m))
+                    self.root.after(0,
+                        lambda m=msg: messagebox.showinfo(
+                            "Message from Administrator", m))
         threading.Thread(target=msg_loop, daemon=True).start()
 
     def run(self):
