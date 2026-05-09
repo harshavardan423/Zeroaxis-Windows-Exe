@@ -75,16 +75,246 @@ def get_user_folder(username: str) -> str:
     os.makedirs(folder, exist_ok=True)
     return folder
 
-def open_user_folder(username: str):
-    """Open the user's dedicated folder in a restricted Explorer window."""
+def open_user_folder(username: str, parent_root=None):
+    """Open an in-app file browser for the user's dedicated folder."""
     folder = get_user_folder(username)
-    try:
-        subprocess.Popen(
-            ["explorer.exe", "/select,", folder],
-            shell=False
-        )
-    except Exception as e:
-        log(f"open_user_folder error: {e}", 'error')
+    FileBrowserWindow(folder, parent=parent_root)
+
+# ========== In-app File Browser ==========
+class FileBrowserWindow:
+    """A simple in-app file manager — no Explorer involved."""
+
+    ICON = {"folder": "📁", "file": "📄", "image": "🖼", "pdf": "📕",
+            "video": "🎬", "audio": "🎵", "zip": "🗜"}
+
+    def __init__(self, root_folder: str, parent=None):
+        self.root_folder  = root_folder
+        self.current_path = root_folder
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("My Files")
+        self.win.geometry("820x560")
+        self.win.configure(bg="#1a1a2e")
+        self.win.grab_set()
+        self._build()
+        self._load(root_folder)
+
+    # ---------- UI ----------
+    def _build(self):
+        # ── Top bar ──
+        top = tk.Frame(self.win, bg="#206bc4", height=44)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+
+        tk.Button(top, text="← Back", command=self._go_up,
+                  bg="#1a5aad", fg="white", font=("Arial", 10),
+                  relief="flat", padx=10, cursor="hand2").pack(side="left", padx=8, pady=7)
+
+        self.path_var = tk.StringVar()
+        tk.Label(top, textvariable=self.path_var, fg="white", bg="#206bc4",
+                 font=("Arial", 10), anchor="w").pack(side="left", padx=4, fill="x", expand=True)
+
+        tk.Button(top, text="➕ New Folder", command=self._new_folder,
+                  bg="#28a745", fg="white", font=("Arial", 10),
+                  relief="flat", padx=10, cursor="hand2").pack(side="right", padx=4, pady=7)
+        tk.Button(top, text="🗑 Delete", command=self._delete_selected,
+                  bg="#dc3545", fg="white", font=("Arial", 10),
+                  relief="flat", padx=10, cursor="hand2").pack(side="right", padx=4, pady=7)
+        tk.Button(top, text="✏ Rename", command=self._rename_selected,
+                  bg="#fd7e14", fg="white", font=("Arial", 10),
+                  relief="flat", padx=10, cursor="hand2").pack(side="right", padx=4, pady=7)
+
+        # ── File list (Treeview) ──
+        cols = ("icon", "name", "size", "modified")
+        self.tree = ttk.Treeview(self.win, columns=cols, show="headings",
+                                 selectmode="browse")
+        self.tree.heading("icon",     text="")
+        self.tree.heading("name",     text="Name")
+        self.tree.heading("size",     text="Size")
+        self.tree.heading("modified", text="Modified")
+        self.tree.column("icon",     width=36,  stretch=False, anchor="center")
+        self.tree.column("name",     width=340, stretch=True)
+        self.tree.column("size",     width=90,  stretch=False, anchor="e")
+        self.tree.column("modified", width=150, stretch=False)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview",
+                        background="#16213e", foreground="white",
+                        fieldbackground="#16213e", rowheight=28,
+                        font=("Arial", 10))
+        style.configure("Treeview.Heading",
+                        background="#206bc4", foreground="white",
+                        font=("Arial", 10, "bold"))
+        style.map("Treeview", background=[("selected", "#2563eb")])
+
+        sb = ttk.Scrollbar(self.win, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True, padx=4, pady=4)
+
+        self.tree.bind("<Double-1>",  self._on_double_click)
+        self.tree.bind("<Return>",    self._on_double_click)
+
+        # ── Status bar ──
+        self.status_var = tk.StringVar(value="")
+        tk.Label(self.win, textvariable=self.status_var,
+                 bg="#222", fg="#aaa", font=("Arial", 9),
+                 anchor="w").pack(fill="x", side="bottom", padx=6)
+
+    # ---------- Navigation ----------
+    def _load(self, path: str):
+        if not os.path.isdir(path):
+            return
+        # Guard: never navigate above the root folder
+        try:
+            Path(path).relative_to(self.root_folder)
+        except ValueError:
+            return
+
+        self.current_path = path
+        rel = os.path.relpath(path, self.root_folder)
+        self.path_var.set("📁  My Files" + ("" if rel == "." else f" / {rel.replace(os.sep, ' / ')}"))
+
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        try:
+            entries = sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            self.status_var.set("Permission denied")
+            return
+
+        count = 0
+        for entry in entries:
+            try:
+                stat  = entry.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M")
+                if entry.is_dir():
+                    icon  = self.ICON["folder"]
+                    size  = ""
+                else:
+                    icon  = self._file_icon(entry.name)
+                    size  = self._human_size(stat.st_size)
+                self.tree.insert("", "end", iid=entry.path,
+                                 values=(icon, entry.name, size, mtime))
+                count += 1
+            except Exception:
+                pass
+        self.status_var.set(f"{count} item(s)  —  {path}")
+
+    def _go_up(self):
+        parent = os.path.dirname(self.current_path)
+        self._load(parent)
+
+    def _on_double_click(self, _event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if os.path.isdir(path):
+            self._load(path)
+        else:
+            self._open_file(path)
+
+    # ---------- File actions ----------
+    def _open_file(self, path: str):
+        try:
+            os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Open failed", str(e), parent=self.win)
+
+    def _new_folder(self):
+        name = self._prompt("New Folder", "Folder name:")
+        if not name:
+            return
+        dest = os.path.join(self.current_path, name)
+        try:
+            os.makedirs(dest, exist_ok=True)
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        name = os.path.basename(path)
+        if not messagebox.askyesno("Delete", f"Delete '{name}'?", parent=self.win):
+            return
+        try:
+            import shutil
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+
+    def _rename_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        old_path = sel[0]
+        old_name = os.path.basename(old_path)
+        new_name = self._prompt("Rename", "New name:", default=old_name)
+        if not new_name or new_name == old_name:
+            return
+        new_path = os.path.join(self.current_path, new_name)
+        try:
+            os.rename(old_path, new_path)
+            self._load(self.current_path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+
+    # ---------- Helpers ----------
+    @staticmethod
+    def _human_size(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.0f} {unit}"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    @staticmethod
+    def _file_icon(name: str) -> str:
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext in ("png","jpg","jpeg","gif","bmp","webp","ico"):  return "🖼"
+        if ext == "pdf":                                           return "📕"
+        if ext in ("mp4","mkv","avi","mov","wmv"):                return "🎬"
+        if ext in ("mp3","wav","aac","flac","ogg"):               return "🎵"
+        if ext in ("zip","rar","7z","tar","gz"):                  return "🗜"
+        return "📄"
+
+    def _prompt(self, title: str, label: str, default: str = "") -> Optional[str]:
+        """Simple modal input dialog."""
+        result = [None]
+        dlg = tk.Toplevel(self.win)
+        dlg.title(title)
+        dlg.configure(bg="#1a1a2e")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        tk.Label(dlg, text=label, fg="white", bg="#1a1a2e",
+                 font=("Arial", 11)).pack(padx=20, pady=(16, 4))
+        entry = tk.Entry(dlg, width=36, font=("Arial", 11))
+        entry.insert(0, default)
+        entry.pack(padx=20, pady=4)
+        entry.focus()
+        entry.select_range(0, "end")
+
+        def _ok(_=None):
+            result[0] = entry.get().strip()
+            dlg.destroy()
+
+        tk.Button(dlg, text="OK", command=_ok, bg="#206bc4", fg="white",
+                  font=("Arial", 11), relief="flat", padx=16, pady=6,
+                  cursor="hand2").pack(pady=(8, 16))
+        entry.bind("<Return>", _ok)
+        dlg.wait_window()
+        return result[0]
+
 
 # ========== Windows lockdown helpers ==========
 def apply_lockdown():
@@ -753,7 +983,7 @@ class LauncherWindow:
                       cursor="hand2").pack(side="left", padx=(0, 8))
         # Always show My Files — opens this user's dedicated folder
         tk.Button(self.quick_frame, text="📁 My Files",
-                  command=lambda: open_user_folder(username),
+                  command=lambda: open_user_folder(username, self.root),
                   bg="#5c636a", fg="white", font=("Arial", 10),
                   relief="flat", padx=14, pady=6,
                   cursor="hand2").pack(side="left")
