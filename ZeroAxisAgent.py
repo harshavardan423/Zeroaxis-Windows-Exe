@@ -1425,11 +1425,15 @@ class LauncherWindow:
         browser = self.enforcer.allowed_browser
         docs    = self.enforcer.allowed_document_viewer
 
+        def _is_android_pkg(s):
+            """Return True if string looks like an Android package name, not a Windows exe."""
+            return bool(s) and '.' in s and not s.lower().endswith('.exe') and not os.path.isabs(s) and s.replace('.','').replace('_','').isalpha()
+
         for label, entry, color in [
             ("🌐  Browser",   browser, "#0ea5e9"),
             ("📄  Documents", docs,    "#8b5cf6"),
         ]:
-            if entry:
+            if entry and not _is_android_pkg(entry):
                 tk.Button(
                     self._quick_frame, text=label,
                     command=lambda e=entry: self._launch(e),
