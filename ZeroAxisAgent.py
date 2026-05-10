@@ -395,6 +395,8 @@ def resolve_app_path(app_entry: str) -> Optional[str]:
         return None
 
     # Try registry uninstall keys for display name match
+    # Strip .exe suffix for display name comparison
+    app_entry_display = app_entry[:-4] if app_entry.lower().endswith('.exe') else app_entry
     for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
         for sub in [
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -406,7 +408,7 @@ def resolve_app_path(app_entry: str) -> Optional[str]:
                     try:
                         subkey = winreg.OpenKey(key, winreg.EnumKey(key, i))
                         name, _ = winreg.QueryValueEx(subkey, "DisplayName")
-                        if name.strip().lower() == app_entry.lower():
+                        if name.strip().lower() == app_entry_display.lower():
                             try:
                                 loc, _ = winreg.QueryValueEx(subkey, "InstallLocation")
                                 # Find first exe in install location
@@ -423,8 +425,28 @@ def resolve_app_path(app_entry: str) -> Optional[str]:
 
 def get_app_display_name(app_entry: str) -> str:
     """Return a friendly display name for the app button."""
-    name = os.path.basename(app_entry).replace('.exe', '').replace('_', ' ')
-    return name.title()
+    base = os.path.basename(app_entry)
+    # Strip .exe and try registry for a proper display name first
+    display = base[:-4] if base.lower().endswith('.exe') else base
+    # Try to get the proper display name from registry
+    for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+        for sub in [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ]:
+            try:
+                key = winreg.OpenKey(hive, sub)
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        subkey = winreg.OpenKey(key, winreg.EnumKey(key, i))
+                        reg_name, _ = winreg.QueryValueEx(subkey, "DisplayName")
+                        if reg_name.strip().lower() == display.lower():
+                            return reg_name.strip()
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    return display.replace('_', ' ')
 
 # ========== Stats collector ==========
 def collect_stats(serial: str):
