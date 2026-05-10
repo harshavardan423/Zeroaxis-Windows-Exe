@@ -1482,8 +1482,9 @@ class LauncherWindow:
     """Full-screen launcher with sidebar navigation and embedded panels."""
 
     NAV_ITEMS = [
-        ("apps",  "Apps",     "⊞"),
-        ("files", "My Files", "📁"),
+        ("apps",    "Apps",        "⊞"),
+        ("files",   "My Files",    "📁"),
+        ("tickets", "Report Issue", "🎫"),
     ]
 
     def __init__(self, client, user_data: dict, enforcer: PolicyEnforcer,
@@ -1507,9 +1508,18 @@ class LauncherWindow:
         self._user_folder = get_user_folder(username)
         os.environ['ZEROAXIS_USER_HOME'] = self._user_folder
 
+        log(f"LauncherWindow: building UI for {username}")
+        try:
+            self._build()
+        except Exception as e:
+            log(f"LauncherWindow._build failed: {e}", 'error')
+            import traceback
+            log(traceback.format_exc(), 'error')
+            raise
+        log("LauncherWindow: starting threads")
         self.tracker.set_active_user(username)
-        self._build()
         self._start_threads()
+        log("LauncherWindow: ready")
 
     # ──────────────────────────────────────────────
     #  Layout
@@ -1622,6 +1632,7 @@ class LauncherWindow:
 
         self._build_apps_panel()
         self._build_files_panel()
+        self._build_tickets_panel()
         self._switch_nav("apps")
 
     def _build_apps_panel(self):
@@ -1674,6 +1685,233 @@ class LauncherWindow:
 
         username = self.user_data.get('username', '')
         self._file_panel = FileBrowserPanel(file_frame, self._user_folder)
+
+    def _build_tickets_panel(self):
+        panel = tk.Frame(self._panel_container, bg=BG)
+        self._panels["tickets"] = panel
+
+        # Header
+        tk.Label(panel, text="Report an Issue",
+                 font=("Segoe UI Semibold", 16), fg=TEXT, bg=BG
+                 ).pack(anchor="w", padx=32, pady=(28, 4))
+        tk.Label(panel, text="Describe your problem and submit it to your administrator.",
+                 font=("Segoe UI", 10), fg=TEXT2, bg=BG
+                 ).pack(anchor="w", padx=32, pady=(0, 20))
+
+        form = tk.Frame(panel, bg=BG)
+        form.pack(fill="x", padx=32)
+
+        # Category
+        tk.Label(form, text="CATEGORY", font=("Segoe UI", 9),
+                 fg=TEXT2, bg=BG).pack(anchor="w", pady=(0, 4))
+        self._ticket_category = tk.StringVar(value="other")
+        cat_frame = tk.Frame(form, bg=BG)
+        cat_frame.pack(fill="x", pady=(0, 16))
+        for cat, label in [("hardware","Hardware"), ("software","Software"),
+                           ("network","Network"), ("other","Other")]:
+            tk.Radiobutton(
+                cat_frame, text=label, value=cat,
+                variable=self._ticket_category,
+                font=("Segoe UI", 10), fg=TEXT, bg=BG,
+                selectcolor=ACCENT, activebackground=BG,
+                activeforeground=TEXT
+            ).pack(side="left", padx=(0, 16))
+
+        # Description
+        tk.Label(form, text="DESCRIPTION", font=("Segoe UI", 9),
+                 fg=TEXT2, bg=BG).pack(anchor="w", pady=(0, 4))
+        self._ticket_desc = tk.Text(
+            form, height=6, font=("Segoe UI", 11),
+            bg=BG2, fg=TEXT, insertbackground=TEXT,
+            relief="flat", bd=0,
+            highlightbackground=BORDER, highlightthickness=1,
+            padx=12, pady=10, wrap="word"
+        )
+        self._ticket_desc.pack(fill="x", pady=(0, 16))
+
+        # Submit button + status
+        btn_row = tk.Frame(form, bg=BG)
+        btn_row.pack(fill="x")
+        self._ticket_status = tk.StringVar(value="")
+        self._ticket_btn = tk.Button(
+            btn_row, text="Submit Ticket",
+            command=self._submit_ticket,
+            font=("Segoe UI Semibold", 11),
+            bg=ACCENT, fg=TEXT,
+            relief="flat", bd=0, cursor="hand2",
+            padx=24, pady=10,
+            activebackground=ACCENT2, activeforeground=TEXT
+        )
+        self._ticket_btn.pack(side="left")
+        tk.Label(btn_row, textvariable=self._ticket_status,
+                 font=("Segoe UI", 10), fg=SUCCESS, bg=BG
+                 ).pack(side="left", padx=16)
+
+        # ── Feedback forms section ──────────────────────────
+        tk.Frame(panel, bg=BORDER, height=1).pack(fill="x", padx=32, pady=(28, 0))
+        tk.Label(panel, text="Feedback",
+                 font=("Segoe UI Semibold", 14), fg=TEXT, bg=BG
+                 ).pack(anchor="w", padx=32, pady=(16, 4))
+        tk.Label(panel, text="Active feedback forms from your administrator.",
+                 font=("Segoe UI", 10), fg=TEXT2, bg=BG
+                 ).pack(anchor="w", padx=32, pady=(0, 12))
+
+        self._feedback_container = tk.Frame(panel, bg=BG)
+        self._feedback_container.pack(fill="x", padx=32)
+        self._feedback_status = tk.StringVar(value="")
+        tk.Label(panel, textvariable=self._feedback_status,
+                 font=("Segoe UI", 10), fg=TEXT2, bg=BG
+                 ).pack(anchor="w", padx=32, pady=(8, 0))
+
+        # Load forms in background
+        threading.Thread(target=self._load_feedback_forms, daemon=True).start()
+
+    def _submit_ticket(self):
+        desc = self._ticket_desc.get("1.0", tk.END).strip()
+        if not desc:
+            self._ticket_status.set("Please describe your issue first.")
+            return
+        username = self.user_data.get('username', '')
+        category = self._ticket_category.get()
+        self._ticket_btn.config(state="disabled", text="Submitting…")
+        self._ticket_status.set("")
+        self.root.update()
+
+        def _do():
+            ok = self.client.submit_ticket(username, desc, category)
+            self.root.after(0, lambda: _done(ok))
+
+        def _done(ok):
+            self._ticket_btn.config(state="normal", text="Submit Ticket")
+            if ok:
+                self._ticket_desc.delete("1.0", tk.END)
+                self._ticket_category.set("other")
+                self._ticket_status.set("✓ Ticket submitted successfully.")
+                self.root.after(4000, lambda: self._ticket_status.set(""))
+            else:
+                self._ticket_status.set("Failed to submit. Check your connection.")
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _load_feedback_forms(self):
+        username = self.user_data.get('username', '')
+        forms = self.client.get_feedback_forms(username)
+        self.root.after(0, lambda: self._render_feedback_forms(forms))
+
+    def _render_feedback_forms(self, forms: list):
+        for w in self._feedback_container.winfo_children():
+            w.destroy()
+
+        if not forms:
+            tk.Label(self._feedback_container,
+                     text="No active feedback forms right now.",
+                     font=("Segoe UI", 10), fg=TEXT2, bg=BG
+                     ).pack(anchor="w")
+            return
+
+        for form in forms:
+            card = tk.Frame(self._feedback_container, bg=CARD,
+                            highlightbackground=BORDER, highlightthickness=1)
+            card.pack(fill="x", pady=(0, 12))
+
+            inner = tk.Frame(card, bg=CARD)
+            inner.pack(fill="x", padx=20, pady=16)
+
+            tk.Label(inner, text=form['title'],
+                     font=("Segoe UI Semibold", 12), fg=TEXT, bg=CARD
+                     ).pack(anchor="w")
+            if form.get('description'):
+                tk.Label(inner, text=form['description'],
+                         font=("Segoe UI", 10), fg=TEXT2, bg=CARD,
+                         wraplength=500, justify="left"
+                         ).pack(anchor="w", pady=(2, 8))
+
+            # Star rating row
+            rating_var = tk.IntVar(value=0)
+            stars_frame = tk.Frame(inner, bg=CARD)
+            stars_frame.pack(anchor="w", pady=(6, 8))
+            star_btns = []
+
+            def _make_hover(btns, rv, n):
+                def _enter(_):
+                    for i, b in enumerate(btns):
+                        b.config(fg="#f59f00" if i < n else TEXT2)
+                def _leave(_):
+                    v = rv.get()
+                    for i, b in enumerate(btns):
+                        b.config(fg="#f59f00" if i < v else TEXT2)
+                return _enter, _leave
+
+            for i in range(1, 6):
+                sb = tk.Label(stars_frame, text="★", font=("Segoe UI", 20),
+                              fg=TEXT2, bg=CARD, cursor="hand2")
+                sb.pack(side="left", padx=2)
+                star_btns.append(sb)
+
+            for i, sb in enumerate(star_btns, 1):
+                _e, _l = _make_hover(star_btns, rating_var, i)
+                sb.bind("<Enter>", _e)
+                sb.bind("<Leave>", _l)
+                sb.bind("<Button-1>", lambda e, n=i, rv=rating_var, btns=star_btns: (
+                    rv.set(n),
+                    [b.config(fg="#f59f00" if j < n else TEXT2)
+                     for j, b in enumerate(btns)]
+                ))
+
+            # Optional text
+            tk.Label(inner, text="Comments (optional)",
+                     font=("Segoe UI", 9), fg=TEXT2, bg=CARD
+                     ).pack(anchor="w")
+            text_box = tk.Text(inner, height=3, font=("Segoe UI", 10),
+                               bg=BG2, fg=TEXT, insertbackground=TEXT,
+                               relief="flat", bd=0,
+                               highlightbackground=BORDER, highlightthickness=1,
+                               padx=10, pady=8, wrap="word")
+            text_box.pack(fill="x", pady=(4, 10))
+
+            # Per-form submit
+            fb_status = tk.StringVar(value="")
+            submit_btn = tk.Button(
+                inner, text="Submit Feedback",
+                font=("Segoe UI Semibold", 10),
+                bg="#8b5cf6", fg=TEXT,
+                relief="flat", bd=0, cursor="hand2",
+                padx=16, pady=8,
+                activebackground="#7c3aed", activeforeground=TEXT
+            )
+            submit_btn.pack(side="left")
+            tk.Label(inner, textvariable=fb_status,
+                     font=("Segoe UI", 10), fg=SUCCESS, bg=CARD
+                     ).pack(side="left", padx=12)
+
+            def _submit_fb(fid=form['id'], rv=rating_var, tb=text_box,
+                           btn=submit_btn, sv=fb_status):
+                rating = rv.get()
+                if rating == 0:
+                    sv.set("Please select a star rating.")
+                    return
+                username = self.user_data.get('username', '')
+                text = tb.get("1.0", tk.END).strip()
+                btn.config(state="disabled", text="Submitting…")
+                sv.set("")
+
+                def _do():
+                    ok = self.client.submit_feedback(username, fid, rating, text)
+                    self.root.after(0, lambda: _done(ok, btn, sv, tb, rv))
+
+                def _done(ok, b, s, t, r):
+                    if ok:
+                        b.config(state="disabled", text="Submitted ✓")
+                        s.set("Thank you for your feedback!")
+                        t.delete("1.0", tk.END)
+                        r.set(0)
+                    else:
+                        b.config(state="normal", text="Submit Feedback")
+                        s.set("Failed. Try again.")
+
+                threading.Thread(target=_do, daemon=True).start()
+
+            submit_btn.config(command=_submit_fb)
 
     # ──────────────────────────────────────────────
     #  Apps panel helpers
@@ -2013,6 +2251,53 @@ class ZeroAxisClient:
             log(f"sync_policy error: {e}", 'error')
         return None
 
+    def submit_ticket(self, username: str, description: str, category: str = 'other') -> bool:
+        try:
+            r = self.session.post(
+                f"{SERVER_URL}/api/enduser/ticket",
+                json={
+                    "device_serial": self.serial,
+                    "username": username,
+                    "description": description,
+                    "category": category,
+                },
+                timeout=10
+            )
+            return r.ok
+        except Exception as e:
+            log(f"submit_ticket error: {e}", 'error')
+            return False
+
+    def get_feedback_forms(self, username: str) -> list:
+        try:
+            r = self.session.get(
+                f"{SERVER_URL}/api/enduser/feedback/forms/{self.serial}/{username}",
+                timeout=10
+            )
+            if r.ok:
+                return r.json()
+        except Exception as e:
+            log(f"get_feedback_forms error: {e}", 'error')
+        return []
+
+    def submit_feedback(self, username: str, form_id: int, rating: int, text: str = '') -> bool:
+        try:
+            r = self.session.post(
+                f"{SERVER_URL}/api/enduser/feedback/submit",
+                json={
+                    "device_serial": self.serial,
+                    "username": username,
+                    "form_id": form_id,
+                    "rating": rating,
+                    "text": text,
+                },
+                timeout=10
+            )
+            return r.ok
+        except Exception as e:
+            log(f"submit_feedback error: {e}", 'error')
+            return False
+
     def push_screen_time(self, minutes: int):
         if not self.active_username:
             return
@@ -2064,15 +2349,6 @@ def start_background_workers(serial: str, enforcer: PolicyEnforcer):
 
 # ========== Main ==========
 def main():
-    # Hide console window when running as compiled exe
-    try:
-        import ctypes as _ctypes
-        hwnd = _ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            _ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-    except Exception:
-        pass
-
     serial = get_serial()
     if not serial:
         log("Could not determine device serial — exiting", 'error')
@@ -2085,12 +2361,6 @@ def main():
     usage_tracker = start_background_workers(serial, enforcer)
     client        = ZeroAxisClient(serial)
 
-    # Create a single persistent hidden root window — prevents taskbar flash
-    # between login and launcher windows
-    _root = tk.Tk()
-    _root.withdraw()
-    _root.protocol("WM_DELETE_WINDOW", lambda: None)
-
     while True:
         login_result = [None]
 
@@ -2101,15 +2371,29 @@ def main():
         login_win.run()
 
         if login_result[0] is None:
+            log("Login returned None — restarting login loop")
             continue
+
+        log(f"Login success: {login_result[0].get('username')}")
 
         policies = login_result[0].get('policies', {})
         enforcer.apply(policies)
 
-        launcher = LauncherWindow(
-            client, login_result[0], enforcer, usage_tracker, serial
-        )
-        launcher.run()
+        try:
+            launcher = LauncherWindow(
+                client, login_result[0], enforcer, usage_tracker, serial
+            )
+            launcher.run()
+        except Exception as e:
+            log(f"LauncherWindow crashed: {e}", 'error')
+            import traceback
+            log(traceback.format_exc(), 'error')
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log(f"main() crashed: {e}", 'error')
+        import traceback
+        log(traceback.format_exc(), 'error')
+        input("Press Enter to exit...")
