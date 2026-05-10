@@ -541,6 +541,7 @@ class AppUsageTracker:
         self.serial          = serial
         self.usage           = {}   # {app_name: minutes}
         self.session_usage   = {}   # {app_name: minutes} since last login
+        self._session_usage  = {}   # internal alias used by tick/flush
         self.today           = date.today()
         self._lock           = threading.Lock()
         self._active_user    = None   # set by LauncherWindow
@@ -2032,7 +2033,6 @@ class ZeroAxisClient:
 def start_background_workers(serial: str, enforcer: PolicyEnforcer):
     usage_tracker = AppUsageTracker(serial)
     dns_tracker   = DnsTracker(serial)
-    client_cmd    = ZeroAxisClient(serial)
     executor      = CommandExecutor(
         serial,
         on_lock=lock_workstation,
@@ -2049,12 +2049,6 @@ def start_background_workers(serial: str, enforcer: PolicyEnforcer):
             executor.poll_and_execute()
             time.sleep(COMMAND_INTERVAL)
 
-    def usage_loop():
-        while True:
-            time.sleep(APP_USAGE_INTERVAL)
-            usage_tracker.tick()
-            usage_tracker.flush_now()
-
     def dns_bg_loop():
         """Collect DNS even when no user is logged in (device-level baseline)."""
         while True:
@@ -2064,13 +2058,21 @@ def start_background_workers(serial: str, enforcer: PolicyEnforcer):
 
     threading.Thread(target=stats_loop,  daemon=True).start()
     threading.Thread(target=cmd_loop,    daemon=True).start()
-    threading.Thread(target=usage_loop,  daemon=True).start()
     threading.Thread(target=dns_bg_loop, daemon=True).start()
 
     return usage_tracker
 
 # ========== Main ==========
 def main():
+    # Hide console window when running as compiled exe
+    try:
+        import ctypes as _ctypes
+        hwnd = _ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            _ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
     serial = get_serial()
     if not serial:
         log("Could not determine device serial — exiting", 'error')
