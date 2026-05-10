@@ -2120,6 +2120,7 @@ class LauncherWindow:
                     self.enforcer.apply(pol)
                     self._safe_after(0, self._refresh_apps_panel)
                     self._safe_after(0, self._update_screen_time_bar)
+                self._safe_after(0, self._load_feedback_forms)
             except Exception as e:
                 log(f"Sync error: {e}", 'error')
         threading.Thread(target=_sync, daemon=True).start()
