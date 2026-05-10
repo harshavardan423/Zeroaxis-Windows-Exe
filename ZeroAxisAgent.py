@@ -411,10 +411,27 @@ def resolve_app_path(app_entry: str) -> Optional[str]:
                         if name.strip().lower() == app_entry_display.lower():
                             try:
                                 loc, _ = winreg.QueryValueEx(subkey, "InstallLocation")
-                                # Find first exe in install location
-                                for f in os.listdir(loc):
-                                    if f.lower().endswith('.exe'):
-                                        return os.path.join(loc, f)
+                                if loc and os.path.isdir(loc):
+                                    best = None
+                                    for root, dirs, files in os.walk(loc):
+                                        depth = root[len(loc):].count(os.sep)
+                                        if depth > 3:
+                                            dirs[:] = []
+                                            continue
+                                        for f in files:
+                                            fl = f.lower()
+                                            if not fl.endswith('.exe'):
+                                                continue
+                                            if any(x in fl for x in ('uninstall', 'setup', 'update', 'helper', 'installer', 'redist', 'scanner', 'swapper', 'connector', 'relaunch')):
+                                                continue
+                                            # Prefer exe whose name matches display name
+                                            f_no_ext = fl[:-4]
+                                            if f_no_ext == app_entry_display.lower():
+                                                return os.path.join(root, f)
+                                            if best is None:
+                                                best = os.path.join(root, f)
+                                    if best:
+                                        return best
                             except Exception:
                                 pass
                     except Exception:
@@ -1028,6 +1045,7 @@ class FileBrowserPanel:
         # Action buttons right side
         for label, cmd, color in [
             ("+ New Folder", self._new_folder,      "#059669"),
+            ("+ New File",   self._new_file,         "#0891b2"),
             ("Rename",       self._rename_selected,  "#d97706"),
             ("Delete",       self._delete_selected,  DANGER),
         ]:
@@ -1109,6 +1127,7 @@ class FileBrowserPanel:
             relief="flat", bd=0
         )
         self._ctx_menu.add_command(label="Open",         command=self._open_selected)
+        self._ctx_menu.add_command(label="Edit (text)",  command=self._edit_selected)
         self._ctx_menu.add_separator()
         self._ctx_menu.add_command(label="Copy",         command=self._copy_selected)
         self._ctx_menu.add_command(label="Cut",          command=self._cut_selected)
@@ -1198,7 +1217,19 @@ class FileBrowserPanel:
         else:
             self._open_file(path)
 
+    def _edit_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        path = sel[0]
+        if not os.path.isfile(path):
+            return
+        self._open_text_editor(path)
+
     def _open_file(self, path: str):
+        if self._is_text_file(os.path.basename(path)):
+            self._open_text_editor(path)
+            return
         try:
             os.startfile(path)
         except Exception as e:
@@ -1246,6 +1277,110 @@ class FileBrowserPanel:
             self._load(self.current_path)
         except Exception as e:
             self.status_var.set(f"Error: {e}")
+
+    def _new_file(self):
+        self._show_prompt("New file name (e.g. notes.txt):", self._confirm_new_file)
+
+    def _confirm_new_file(self, name: str):
+        if not name:
+            return
+        if '/' in name or '\\' in name:
+            self.status_var.set("Error: name cannot contain / or \\")
+            return
+        target = os.path.join(self.current_path, name)
+        if os.path.exists(target):
+            self.status_var.set(f"Error: '{name}' already exists")
+            return
+        try:
+            open(target, 'w').close()
+            self._load(self.current_path)
+            # Open text editor immediately if it's a text file
+            if self._is_text_file(name):
+                self._open_text_editor(target)
+        except Exception as e:
+            self.status_var.set(f"Error: {e}")
+
+    @staticmethod
+    def _is_text_file(name: str) -> bool:
+        exts = ('.txt', '.md', '.csv', '.log', '.json', '.xml',
+                '.html', '.htm', '.py', '.js', '.ts', '.css', '.ini', '.cfg')
+        return name.lower().endswith(exts)
+
+    def _open_text_editor(self, path: str):
+        """Open an in-app text editor dialog for text files."""
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+        except Exception as e:
+            self.status_var.set(f"Cannot open: {e}")
+            return
+
+        win = tk.Toplevel(self.frame)
+        win.title(f"Edit — {os.path.basename(path)}")
+        win.geometry("700x500")
+        win.configure(bg=BG)
+        win.grab_set()
+
+        # Toolbar
+        tb = tk.Frame(win, bg=BG2, height=44)
+        tb.pack(fill="x")
+        tb.pack_propagate(False)
+        tk.Label(tb, text=f"✏  {os.path.basename(path)}",
+                 font=("Segoe UI", 11), fg=TEXT, bg=BG2).pack(side="left", padx=16, pady=10)
+
+        def _save():
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(text_area.get("1.0", tk.END))
+                self.status_var.set(f"Saved ✓  {os.path.basename(path)}")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Save failed", str(e), parent=win)
+
+        tk.Button(tb, text="Save", command=_save,
+                  bg=ACCENT, fg=TEXT, font=("Segoe UI Semibold", 10),
+                  relief="flat", bd=0, padx=16, pady=6,
+                  cursor="hand2").pack(side="right", padx=8, pady=6)
+        tk.Button(tb, text="Cancel", command=win.destroy,
+                  bg=CARD, fg=TEXT2, font=("Segoe UI", 10),
+                  relief="flat", bd=0, padx=12, pady=6,
+                  cursor="hand2").pack(side="right", padx=0, pady=6)
+
+        # Line numbers + text area side by side
+        editor_frame = tk.Frame(win, bg=BG)
+        editor_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        line_nums = tk.Text(editor_frame, width=4, bg=BG2, fg=TEXT2,
+                            font=("Consolas", 11), state="disabled",
+                            relief="flat", bd=0, padx=6)
+        line_nums.pack(side="left", fill="y")
+
+        text_area = tk.Text(editor_frame, bg=BG, fg=TEXT,
+                            insertbackground=TEXT,
+                            font=("Consolas", 11),
+                            relief="flat", bd=0,
+                            wrap="none", padx=8, pady=4,
+                            undo=True)
+        text_area.insert("1.0", content)
+
+        vsb = ttk.Scrollbar(editor_frame, orient="vertical", command=text_area.yview)
+        hsb = ttk.Scrollbar(win, orient="horizontal", command=text_area.xview)
+        text_area.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        text_area.pack(side="left", fill="both", expand=True)
+
+        def _update_line_nums(_=None):
+            line_nums.config(state="normal")
+            line_nums.delete("1.0", tk.END)
+            count = int(text_area.index(tk.END).split('.')[0])
+            line_nums.insert("1.0", "\n".join(str(i) for i in range(1, count)))
+            line_nums.config(state="disabled")
+
+        text_area.bind("<KeyRelease>", _update_line_nums)
+        text_area.bind("<Control-s>", lambda e: _save())
+        _update_line_nums()
+        text_area.focus()
 
     def _delete_selected(self):
         sel = self.tree.selection()
@@ -1338,277 +1473,7 @@ class FileBrowserPanel:
     def _dismiss_prompt(self):
         self._prompt_frame.pack_forget()
 
-    EXT_ICONS = {
-        ("png","jpg","jpeg","gif","bmp","webp","ico"): "🖼",
-        ("pdf",):                                      "📕",
-        ("mp4","mkv","avi","mov","wmv"):               "🎬",
-        ("mp3","wav","aac","flac","ogg"):              "🎵",
-        ("zip","rar","7z","tar","gz"):                 "🗜",
-        ("docx","doc","odt"):                          "📝",
-        ("xlsx","xls","csv"):                          "📊",
-        ("pptx","ppt"):                                "📋",
-        ("py","js","ts","html","css","json","xml"):    "💻",
-        ("txt","md","log"):                            "📃",
-    }
-
-    def __init__(self, parent: tk.Frame, root_folder: str):
-        self.root_folder  = root_folder
-        self.current_path = root_folder
-        self.frame        = parent
-        self._build()
-        self._load(root_folder)
-
-    def _file_icon(self, name: str) -> str:
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        type_map = {
-            ("png","jpg","jpeg","gif","bmp","webp","ico"): "IMG",
-            ("pdf",):                                      "PDF",
-            ("mp4","mkv","avi","mov","wmv"):               "VID",
-            ("mp3","wav","aac","flac","ogg"):              "AUD",
-            ("zip","rar","7z","tar","gz"):                 "ZIP",
-            ("docx","doc","odt"):                          "DOC",
-            ("xlsx","xls","csv"):                          "XLS",
-            ("pptx","ppt"):                                "PPT",
-            ("py","js","ts","html","css","json","xml"):    "CODE",
-            ("txt","md","log"):                            "TXT",
-        }
-        for exts, label in type_map.items():
-            if ext in exts:
-                return label
-        return "FILE"
-
-    @staticmethod
-    def _human_size(n: int) -> str:
-        for unit in ("B", "KB", "MB", "GB"):
-            if n < 1024:
-                return f"{n:.0f} {unit}"
-            n /= 1024
-        return f"{n:.1f} TB"
-
-    def _build(self):
-        f = self.frame
-        f.configure(bg=BG2)
-
-        # ── Breadcrumb / toolbar row ──
-        toolbar = tk.Frame(f, bg=BG2)
-        toolbar.pack(fill="x", padx=0, pady=0)
-
-        self.back_btn = tk.Button(toolbar, text="←", command=self._go_up,
-                                  bg=CARD, fg=TEXT, font=("Segoe UI", 13),
-                                  relief="flat", bd=0, cursor="hand2",
-                                  padx=12, pady=6,
-                                  activebackground=BORDER, activeforeground=TEXT)
-        self.back_btn.pack(side="left", padx=(0, 1))
-
-        self.path_var = tk.StringVar()
-        path_label = tk.Label(toolbar, textvariable=self.path_var,
-                              bg=CARD, fg=TEXT2,
-                              font=("Segoe UI", 10), anchor="w", padx=12)
-        path_label.pack(side="left", fill="x", expand=True, ipady=8)
-
-        for label, cmd, color in [
-            ("+ Folder", self._new_folder, "#059669"),
-            ("Rename",   self._rename_selected, "#d97706"),
-            ("Delete",   self._delete_selected, DANGER),
-        ]:
-            tk.Button(toolbar, text=label, command=cmd,
-                      bg=color, fg=TEXT, font=("Segoe UI", 9),
-                      relief="flat", bd=0, cursor="hand2",
-                      padx=10, pady=6,
-                      activebackground=BORDER, activeforeground=TEXT
-                      ).pack(side="right", padx=(1, 0))
-
-        # ── File list ──
-        list_frame = tk.Frame(f, bg=BG2)
-        list_frame.pack(fill="both", expand=True)
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("FB.Treeview",
-                        background=BG2, foreground=TEXT,
-                        fieldbackground=BG2, rowheight=32,
-                        font=("Segoe UI", 10),
-                        borderwidth=0)
-        style.configure("FB.Treeview.Heading",
-                        background=CARD, foreground=TEXT2,
-                        font=("Segoe UI", 9),
-                        borderwidth=0, relief="flat")
-        style.map("FB.Treeview",
-                  background=[("selected", ACCENT)],
-                  foreground=[("selected", TEXT)])
-
-        cols = ("icon", "name", "size", "modified")
-        self.tree = ttk.Treeview(list_frame, columns=cols,
-                                 show="headings", selectmode="browse",
-                                 style="FB.Treeview")
-        self.tree.heading("icon",     text="")
-        self.tree.heading("name",     text="Name")
-        self.tree.heading("size",     text="Size")
-        self.tree.heading("modified", text="Modified")
-        self.tree.column("icon",     width=50,  stretch=False, anchor="center")
-        self.tree.column("name",     width=260, stretch=True)
-        self.tree.column("size",     width=80,  stretch=False, anchor="e")
-        self.tree.column("modified", width=140, stretch=False)
-
-        vsb = ttk.Scrollbar(list_frame, orient="vertical",
-                            command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self.tree.pack(fill="both", expand=True)
-
-        self.tree.bind("<Double-1>", self._on_double_click)
-        self.tree.bind("<Return>",   self._on_double_click)
-
-        # ── Status bar ──
-        self.status_var = tk.StringVar(value="")
-        tk.Label(f, textvariable=self.status_var,
-                 bg=CARD, fg=TEXT2, font=("Segoe UI", 9),
-                 anchor="w", padx=10).pack(fill="x", side="bottom", ipady=4)
-
-    def _load(self, path: str):
-        try:
-            Path(path).relative_to(self.root_folder)
-        except ValueError:
-            return
-        if not os.path.isdir(path):
-            return
-        self.current_path = path
-        rel = os.path.relpath(path, self.root_folder)
-        display = "My Files" + ("" if rel == "." else
-                                 "  /  " + rel.replace(os.sep, "  /  "))
-        self.path_var.set(display)
-        for row in self.tree.get_children():
-            self.tree.delete(row)
-        try:
-            entries = sorted(os.scandir(path),
-                             key=lambda e: (not e.is_dir(), e.name.lower()))
-        except PermissionError:
-            self.status_var.set("Permission denied")
-            return
-        count = 0
-        for entry in entries:
-            try:
-                stat  = entry.stat()
-                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M")
-                icon  = "DIR" if entry.is_dir() else self._file_icon(entry.name)
-                size  = "" if entry.is_dir() else self._human_size(stat.st_size)
-                self.tree.insert("", "end", iid=entry.path,
-                                 values=(icon, entry.name, size, mtime))
-                count += 1
-            except Exception:
-                pass
-        self.status_var.set(f"{count} item(s)")
-
-    def _go_up(self):
-        self._load(os.path.dirname(self.current_path))
-
-    def _on_double_click(self, _=None):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        path = sel[0]
-        if os.path.isdir(path):
-            self._load(path)
-        else:
-            try:
-                os.startfile(path)
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
-
-    def _new_folder(self):
-        self._inline_prompt("New folder name:", self._confirm_new_folder)
-
-    def _confirm_new_folder(self, name: str):
-        if not name:
-            return
-        try:
-            os.makedirs(os.path.join(self.current_path, name), exist_ok=True)
-            self._load(self.current_path)
-        except Exception as e:
-            self._show_inline_error(str(e))
-
-    def _delete_selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        path = sel[0]
-        if not messagebox.askyesno("Delete", f"Delete '{os.path.basename(path)}'?"):
-            return
-        try:
-            import shutil
-            shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
-            self._load(self.current_path)
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def _rename_selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        self._pending_rename = sel[0]
-        default = os.path.basename(sel[0])
-        self._inline_prompt(f"Rename to:", self._confirm_rename, default=default)
-
-    def _confirm_rename(self, new_name: str):
-        old = getattr(self, '_pending_rename', None)
-        if not old or not new_name:
-            return
-        try:
-            os.rename(old, os.path.join(self.current_path, new_name))
-            self._load(self.current_path)
-        except Exception as e:
-            self._show_inline_error(str(e))
-
-    def _inline_prompt(self, label: str, callback, default: str = ""):
-        """Show an inline prompt bar inside the panel — no popup window."""
-        # Remove any existing prompt bar
-        self._dismiss_inline_prompt()
-
-        bar = tk.Frame(self.frame, bg=CARD,
-                       highlightbackground=ACCENT, highlightthickness=1)
-        bar.pack(fill="x", side="bottom")
-        self._prompt_bar = bar
-
-        tk.Label(bar, text=label, fg=TEXT2, bg=CARD,
-                 font=("Segoe UI", 10)).pack(side="left", padx=(12, 8), pady=10)
-
-        entry = tk.Entry(bar, font=("Segoe UI", 11),
-                         bg=BG2, fg=TEXT, insertbackground=TEXT,
-                         relief="flat", bd=0,
-                         highlightbackground=BORDER, highlightthickness=1)
-        entry.insert(0, default)
-        entry.pack(side="left", fill="x", expand=True, ipady=6, pady=8)
-        entry.select_range(0, "end")
-        entry.focus()
-
-        def _ok(_=None):
-            val = entry.get().strip()
-            self._dismiss_inline_prompt()
-            callback(val)
-
-        def _cancel(_=None):
-            self._dismiss_inline_prompt()
-
-        tk.Button(bar, text="OK", command=_ok,
-                  bg=ACCENT, fg=TEXT, font=("Segoe UI Semibold", 10),
-                  relief="flat", bd=0, padx=14, pady=6,
-                  cursor="hand2").pack(side="left", padx=4, pady=8)
-        tk.Button(bar, text="✕", command=_cancel,
-                  bg=CARD, fg=TEXT2, font=("Segoe UI", 10),
-                  relief="flat", bd=0, padx=10, pady=6,
-                  cursor="hand2").pack(side="left", padx=(0, 8), pady=8)
-
-        entry.bind("<Return>", _ok)
-        entry.bind("<Escape>", _cancel)
-
-    def _dismiss_inline_prompt(self):
-        bar = getattr(self, '_prompt_bar', None)
-        if bar and bar.winfo_exists():
-            bar.destroy()
-        self._prompt_bar = None
-
-    def _show_inline_error(self, msg: str):
-        self.status_var.set(f"Error: {msg}")
+    # (duplicate methods removed — using the first complete implementation above)
 
 
 # ========== Launcher window ==========
@@ -1961,10 +1826,23 @@ class LauncherWindow:
             return
         path = resolve_app_path(app_path) or app_path
         try:
-            subprocess.Popen(path, shell=True)
+            # Use DETACHED_PROCESS to avoid cmd flash on Windows
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                path,
+                shell=False,
+                creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                close_fds=True
+            )
             log(f"Launched: {path}")
         except Exception as e:
-            messagebox.showerror("ZeroAxis", f"Failed to launch app:\n{e}")
+            # Fallback to shell=True if direct launch fails (e.g. path has spaces)
+            try:
+                subprocess.Popen(path, shell=True,
+                                 creationflags=0x08000000)
+            except Exception as e2:
+                messagebox.showerror("ZeroAxis", f"Failed to launch app:\n{e2}")
 
     # ──────────────────────────────────────────────
     #  Logout / sync
@@ -1987,16 +1865,30 @@ class LauncherWindow:
     def _restore_env(self):
         os.environ.pop('ZEROAXIS_USER_HOME', None)
 
+    def _safe_after(self, ms, fn):
+        """Schedule fn only if the window still exists."""
+        try:
+            if self.root.winfo_exists():
+                self.root.after(ms, fn)
+        except Exception:
+            pass
+
     def _sync_and_refresh(self):
         def _sync():
-            pol = self.client.sync_policy()
-            if pol:
-                self.enforcer.apply(pol)
-                self.root.after(0, self._refresh_apps_panel)
-                self.root.after(0, self._update_screen_time_bar)
+            try:
+                pol = self.client.sync_policy()
+                if pol:
+                    self.enforcer.apply(pol)
+                    self._safe_after(0, self._refresh_apps_panel)
+                    self._safe_after(0, self._update_screen_time_bar)
+            except Exception as e:
+                log(f"Sync error: {e}", 'error')
         threading.Thread(target=_sync, daemon=True).start()
-        self.status_var.set("Syncing…")
-        self.root.after(3000, lambda: self.status_var.set(""))
+        try:
+            self.status_var.set("Syncing…")
+            self._safe_after(3000, lambda: self.status_var.set(""))
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────
     #  Background threads
@@ -2011,8 +1903,8 @@ class LauncherWindow:
                     pol = self.client.sync_policy()
                     if pol:
                         self.enforcer.apply(pol)
-                        self.root.after(0, self._refresh_apps_panel)
-                        self.root.after(0, self._update_screen_time_bar)
+                        self._safe_after(0, self._refresh_apps_panel)
+                        self._safe_after(0, self._update_screen_time_bar)
                 except Exception as e:
                     log(f"Policy sync error: {e}", 'error')
         threading.Thread(target=policy_loop, daemon=True).start()
@@ -2024,7 +1916,7 @@ class LauncherWindow:
                 tick += 1
                 self.enforcer.today_usage += 1
                 self.tracker.tick()
-                self.root.after(0, self._update_screen_time_bar)
+                self._safe_after(0, self._update_screen_time_bar)
                 if tick % 5 == 0:
                     sm = self.tracker.get_session_minutes()
                     threading.Thread(
@@ -2033,14 +1925,22 @@ class LauncherWindow:
                     threading.Thread(
                         target=self.tracker.flush_now, daemon=True).start()
                 if self.enforcer.screen_time_exceeded():
-                    self.root.after(0, lambda: (
-                        messagebox.showwarning("ZeroAxis", "Screen time limit reached."),
-                        self._force_logout()))
+                    def _screen_time_logout():
+                        try:
+                            messagebox.showwarning("ZeroAxis", "Screen time limit reached.")
+                            self._force_logout()
+                        except Exception:
+                            pass
+                    self._safe_after(0, _screen_time_logout)
                     break
                 if self.enforcer.is_curfew_active():
-                    self.root.after(0, lambda: (
-                        messagebox.showwarning("ZeroAxis", "Curfew active. Device locked."),
-                        self._force_logout()))
+                    def _curfew_logout():
+                        try:
+                            messagebox.showwarning("ZeroAxis", "Curfew active. Device locked.")
+                            self._force_logout()
+                        except Exception:
+                            pass
+                    self._safe_after(0, _curfew_logout)
                     break
         threading.Thread(target=time_loop, daemon=True).start()
 
@@ -2056,7 +1956,7 @@ class LauncherWindow:
                 time.sleep(1)
                 if _pending_messages:
                     msg = _pending_messages.pop(0)
-                    self.root.after(0,
+                    self._safe_after(0,
                         lambda m=msg: messagebox.showinfo(
                             "Message from Administrator", m))
         threading.Thread(target=msg_loop, daemon=True).start()
@@ -2177,31 +2077,30 @@ def main():
         sys.exit(1)
     log(f"ZeroAxis Agent starting. Serial={serial}")
 
-    # Apply lockdown registry keys
     apply_lockdown()
 
-    # Start stats + command workers immediately (device shows online even on login screen)
     enforcer      = PolicyEnforcer()
     usage_tracker = start_background_workers(serial, enforcer)
     client        = ZeroAxisClient(serial)
 
-    # Main loop: login → launcher → back to login
+    # Create a single persistent hidden root window — prevents taskbar flash
+    # between login and launcher windows
+    _root = tk.Tk()
+    _root.withdraw()
+    _root.protocol("WM_DELETE_WINDOW", lambda: None)
+
     while True:
         login_result = [None]
-        done_event   = threading.Event()
 
         def on_login_success(data):
             login_result[0] = data
-            done_event.set()
 
         login_win = LoginWindow(client, on_login_success)
         login_win.run()
 
         if login_result[0] is None:
-            # Login window closed without success — restart
             continue
 
-        # Apply policies from login response
         policies = login_result[0].get('policies', {})
         enforcer.apply(policies)
 
@@ -2209,7 +2108,6 @@ def main():
             client, login_result[0], enforcer, usage_tracker, serial
         )
         launcher.run()
-        # When launcher window closes (logout/lock), loop restarts → login screen
 
 if __name__ == "__main__":
     main()
