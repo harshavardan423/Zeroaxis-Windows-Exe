@@ -74,6 +74,45 @@ D_DANGER  = "#ef4444"
 FONT_MONO = "Consolas"
 FONT_UI   = "Segoe UI"
 
+# ========== Icon extraction ==========
+_icon_cache: dict = {}
+
+def extract_exe_icon(exe_path: str, size: int = 48):
+    """Extract icon from .exe using pywin32+Pillow. Returns PhotoImage or None."""
+    if exe_path in _icon_cache:
+        return _icon_cache[exe_path]
+    try:
+        import win32ui, win32gui, win32con
+        from PIL import Image, ImageTk
+        large, small = win32gui.ExtractIconEx(exe_path, 0)
+        if not large:
+            _icon_cache[exe_path] = None
+            return None
+        hicon = large[0]
+        hdc_screen = win32gui.GetDC(0)
+        hdc = win32ui.CreateDCFromHandle(hdc_screen)
+        hdc_mem = hdc.CreateCompatibleDC()
+        bmp = win32ui.CreateBitmap()
+        bmp.CreateCompatibleBitmap(hdc, size, size)
+        hdc_mem.SelectObject(bmp)
+        hdc_mem.FillSolidRect((0, 0, size, size), 0xFFFFFF)
+        win32gui.DrawIconEx(hdc_mem.GetSafeHdc(), 0, 0, hicon, size, size, 0, None, win32con.DI_NORMAL)
+        bmp_info = bmp.GetInfo()
+        bmp_bits = bmp.GetBitmapBits(True)
+        img = Image.frombuffer('RGB', (bmp_info['bmWidth'], bmp_info['bmHeight']), bmp_bits, 'raw', 'BGRX', 0, 1)
+        img = img.resize((size, size), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        win32gui.DestroyIcon(hicon)
+        if small:
+            win32gui.DestroyIcon(small[0])
+        hdc_mem.DeleteDC()
+        win32gui.ReleaseDC(0, hdc_screen)
+        _icon_cache[exe_path] = photo
+        return photo
+    except Exception:
+        _icon_cache[exe_path] = None
+        return None
+
 # ========== Serial ==========
 def get_serial():
     try:
@@ -569,53 +608,45 @@ class LoginWindow:
         self.root       = tk.Tk()
         self.root.title("ZeroAxis")
         self.root.attributes("-fullscreen", True)
-        self.root.configure(bg=D_BG)
+        self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         self._build()
 
     def _build(self):
-        canvas = tk.Canvas(self.root, bg=D_BG, highlightthickness=0)
-        canvas.place(relwidth=1, relheight=1)
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        # Grid lines
-        for x in range(0, sw, 80):
-            canvas.create_line(x, 0, x, sh, fill="#1a2035", width=1)
-        for y in range(0, sh, 80):
-            canvas.create_line(0, y, sw, y, fill="#1a2035", width=1)
+        self.root.configure(bg=BG)
 
         # Center card
-        card = tk.Frame(self.root, bg=D_CARD, bd=0,
-                        highlightbackground=D_BORDER, highlightthickness=1)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=440)
+        card = tk.Frame(self.root, bg=BG_CARD, bd=0,
+                        highlightbackground=BORDER, highlightthickness=1)
+        card.place(relx=0.5, rely=0.5, anchor="center", width=420)
 
         # Top accent bar
-        tk.Frame(card, bg=D_ACCENT, height=4).pack(fill="x")
+        tk.Frame(card, bg=ACCENT, height=4).pack(fill="x")
 
-        inner = tk.Frame(card, bg=D_CARD)
+        inner = tk.Frame(card, bg=BG_CARD)
         inner.pack(fill="both", padx=44, pady=40)
 
         # Logo
-        logo_f = tk.Frame(inner, bg=D_CARD)
-        logo_f.pack(pady=(0, 36))
-        tk.Label(logo_f, text="◈", font=(FONT_MONO, 28, "bold"),
-                 fg=D_ACCENT, bg=D_CARD).pack()
-        tk.Label(logo_f, text="ZEROAXIS", font=(FONT_MONO, 20, "bold"),
-                 fg=D_TEXT, bg=D_CARD).pack()
-        tk.Label(logo_f, text="SECURE WORKSTATION", font=(FONT_MONO, 9),
-                 fg=D_TEXT2, bg=D_CARD).pack()
+        logo_f = tk.Frame(inner, bg=BG_CARD)
+        logo_f.pack(pady=(0, 32))
+        tk.Label(logo_f, text="◈", font=(FONT_MONO, 26, "bold"),
+                 fg=ACCENT, bg=BG_CARD).pack()
+        tk.Label(logo_f, text="ZEROAXIS", font=(FONT_MONO, 18, "bold"),
+                 fg=TEXT, bg=BG_CARD).pack()
+        tk.Label(logo_f, text="SECURE WORKSTATION", font=(FONT_UI, 9),
+                 fg=TEXT2, bg=BG_CARD).pack()
 
         def make_field(label_text, show=""):
-            tk.Label(inner, text=label_text, font=(FONT_MONO, 8, "bold"),
-                     fg=D_TEXT2, bg=D_CARD, anchor="w").pack(fill="x", pady=(0, 4))
-            e = tk.Entry(inner, font=(FONT_MONO, 13), bg=D_BG2,
-                         fg=D_TEXT, insertbackground=D_TEXT,
+            tk.Label(inner, text=label_text, font=(FONT_UI, 8, "bold"),
+                     fg=TEXT2, bg=BG_CARD, anchor="w").pack(fill="x", pady=(0, 4))
+            e = tk.Entry(inner, font=(FONT_UI, 12), bg=BG,
+                         fg=TEXT, insertbackground=TEXT,
                          relief="flat", bd=0,
-                         highlightbackground=D_BORDER,
+                         highlightbackground=BORDER,
                          highlightthickness=1,
-                         highlightcolor=D_ACCENT,
+                         highlightcolor=ACCENT,
                          show=show)
-            e.pack(fill="x", ipady=11, pady=(0, 18))
+            e.pack(fill="x", ipady=10, pady=(0, 16))
             return e
 
         self.username = make_field("USERNAME")
@@ -623,17 +654,17 @@ class LoginWindow:
         self.username.focus()
 
         self.btn = tk.Button(inner, text="SIGN IN", command=self._login,
-                             bg=D_ACCENT, fg=D_TEXT,
-                             font=(FONT_MONO, 11, "bold"),
+                             bg=ACCENT, fg=BG_CARD,
+                             font=(FONT_UI, 11, "bold"),
                              relief="flat", bd=0, cursor="hand2",
-                             activebackground=D_ACCENT2, activeforeground=D_TEXT)
-        self.btn.pack(fill="x", ipady=13)
-        self.btn.bind("<Enter>", lambda e: self.btn.config(bg=D_ACCENT2))
-        self.btn.bind("<Leave>", lambda e: self.btn.config(bg=D_ACCENT))
+                             activebackground=ACCENT2, activeforeground=BG_CARD)
+        self.btn.pack(fill="x", ipady=12)
+        self.btn.bind("<Enter>", lambda e: self.btn.config(bg=ACCENT2))
+        self.btn.bind("<Leave>", lambda e: self.btn.config(bg=ACCENT))
 
-        self.status = tk.Label(inner, text="", fg=D_DANGER,
-                               bg=D_CARD, font=(FONT_MONO, 9))
-        self.status.pack(pady=(14, 0))
+        self.status = tk.Label(inner, text="", fg=DANGER,
+                               bg=BG_CARD, font=(FONT_UI, 9))
+        self.status.pack(pady=(12, 0))
 
         self.username.bind("<Return>", lambda e: self.pin.focus())
         self.pin.bind("<Return>",      lambda e: self._login())
@@ -641,8 +672,8 @@ class LoginWindow:
         # Bottom serial info
         serial = get_serial()
         tk.Label(self.root,
-                 text=f"DEVICE  {serial[:8].upper()}...  ·  ZeroAxis MDM",
-                 font=(FONT_MONO, 8), fg="#2a3048", bg=D_BG
+                 text=f"Device  {serial[:12]}  ·  ZeroAxis MDM",
+                 font=(FONT_UI, 8), fg=TEXT_DIM, bg=BG
                  ).place(relx=0.5, rely=0.97, anchor="center")
 
     def _login(self):
@@ -1369,11 +1400,77 @@ class LauncherWindow:
         canvas.bind_all("<MouseWheel>",
                         lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
         self._apps_canvas = canvas
-        self._refresh_apps_panel()
+        self._app_icons = {}
+        self._resolved_apps = []
+        # Show window immediately, load apps in background
+        self._apps_loading = True
+        threading.Thread(target=self._resolve_apps_background, daemon=True).start()
+    
+
+    def _resolve_apps_background(self):
+        # Resolve paths and extract raw PIL images in background thread
+        # PhotoImage conversion must happen on main thread
+        import win32ui, win32gui, win32con
+        from PIL import Image
+        resolved = []
+        raw_images = {}  # path -> PIL Image or None
+        for entry in self.enforcer.allowed_apps:
+            path = resolve_app_path(entry)
+            if path:
+                display = get_app_display_name(entry)
+                resolved.append((display, path))
+                # Extract raw PIL image only (no PhotoImage yet)
+                try:
+                    size = 48
+                    large, small = win32gui.ExtractIconEx(path, 0)
+                    if large:
+                        hicon = large[0]
+                        hdc_screen = win32gui.GetDC(0)
+                        hdc = win32ui.CreateDCFromHandle(hdc_screen)
+                        hdc_mem = hdc.CreateCompatibleDC()
+                        bmp = win32ui.CreateBitmap()
+                        bmp.CreateCompatibleBitmap(hdc, size, size)
+                        hdc_mem.SelectObject(bmp)
+                        hdc_mem.FillSolidRect((0, 0, size, size), 0xFFFFFF)
+                        win32gui.DrawIconEx(hdc_mem.GetSafeHdc(), 0, 0, hicon, size, size, 0, None, win32con.DI_NORMAL)
+                        bmp_info = bmp.GetInfo()
+                        bmp_bits = bmp.GetBitmapBits(True)
+                        img = Image.frombuffer('RGB', (bmp_info['bmWidth'], bmp_info['bmHeight']), bmp_bits, 'raw', 'BGRX', 0, 1)
+                        img = img.resize((size, size), Image.LANCZOS)
+                        raw_images[path] = img
+                        win32gui.DestroyIcon(hicon)
+                        if small:
+                            win32gui.DestroyIcon(small[0])
+                        hdc_mem.DeleteDC()
+                        win32gui.ReleaseDC(0, hdc_screen)
+                    else:
+                        raw_images[path] = None
+                except Exception:
+                    raw_images[path] = None
+        # Hand off to main thread for PhotoImage conversion
+        self._safe_after(0, lambda: self._finish_app_load(resolved, raw_images))
+
+    def _finish_app_load(self, resolved, raw_images):
+        from PIL import ImageTk
+        icons = {}
+        for display, path in resolved:
+            img = raw_images.get(path)
+            if img:
+                try:
+                    icons[path] = ImageTk.PhotoImage(img)
+                except Exception:
+                    icons[path] = None
+            else:
+                icons[path] = None
+        self._resolved_apps = [(d, p, icons.get(p)) for d, p in resolved]
+        self._app_icons = icons
+        self._apps_loading = False
+        self._build_app_grid()
 
     def _refresh_apps_panel(self):
         self._build_quick_buttons()
-        self._build_app_grid()
+        if not getattr(self, '_apps_loading', False):
+            self._build_app_grid()
 
     def _build_quick_buttons(self):
         for w in self._quick_frame.winfo_children():
@@ -1399,26 +1496,24 @@ class LauncherWindow:
         for w in self._apps_inner.winfo_children():
             w.destroy()
 
-        apps = self.enforcer.allowed_apps
-        resolved = []
-        for entry in apps:
-            path = resolve_app_path(entry)
-            if path:
-                resolved.append((get_app_display_name(entry), path))
+        resolved_raw = getattr(self, '_resolved_apps', [])
+        resolved = [(d, p) for d, p, _ in resolved_raw]
 
         if not resolved:
             empty = tk.Frame(self._apps_inner, bg=BG_DARK)
             empty.pack(expand=True, pady=60)
             tk.Label(empty, text="⊞", font=(FONT_MONO, 36), fg=BORDER, bg=BG_DARK).pack()
             tk.Label(empty, text="NO APPS CONFIGURED",
-                     font=(FONT_MONO, 12, "bold"), fg=TEXT2, bg=BG_DARK).pack(pady=(8, 4))
+                     font=(FONT_UI, 12, "bold"), fg=TEXT2, bg=BG_DARK).pack(pady=(8, 4))
             tk.Label(empty, text="Contact your administrator to assign applications.",
-                     font=(FONT_MONO, 9), fg=TEXT_DIM, bg=BG_DARK).pack()
+                     font=(FONT_UI, 9), fg=TEXT_DIM, bg=BG_DARK).pack()
             return
 
         COLS   = 5
-        CARD_W = 150
-        CARD_H = 108
+        CARD_W = 148
+        CARD_H = 120
+
+        
 
         for idx, (display_name, path) in enumerate(resolved):
             r, c = divmod(idx, COLS)
@@ -1428,41 +1523,30 @@ class LauncherWindow:
             card_frame.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
             card_frame.grid_propagate(False)
 
-            # Colour accent strip at top
-            accent_strip = tk.Frame(card_frame, bg=ACCENT, height=3)
-            accent_strip.pack(fill="x")
+            photo = self._app_icons.get(path)
+            if photo:
+                icon_lbl = tk.Label(card_frame, image=photo, bg=BG_CARD)
+                icon_lbl.image = photo  # keep reference
+                icon_lbl.pack(pady=(16, 4))
+            else:
+                # Fallback: letter initial
+                initial = display_name[0].upper() if display_name else "?"
+                icon_lbl = tk.Label(card_frame, text=initial,
+                                    font=(FONT_MONO, 22, "bold"),
+                                    fg=ACCENT, bg=BG_CARD)
+                icon_lbl.pack(pady=(18, 4))
 
-            # Initial-letter avatar
-            initial = display_name[0].upper() if display_name else "?"
-            avatar = tk.Label(card_frame, text=initial,
-                              font=(FONT_MONO, 20, "bold"),
-                              fg=ACCENT, bg=BG_CARD)
-            avatar.pack(pady=(14, 4))
-
-            name_lbl = tk.Label(card_frame, text=display_name.upper(),
-                                font=(FONT_MONO, 7, "bold"),
+            name_lbl = tk.Label(card_frame,
+                                text=display_name,
+                                font=(FONT_UI, 8),
                                 fg=TEXT2, bg=BG_CARD,
                                 wraplength=CARD_W - 16)
             name_lbl.pack()
 
-            def _enter(e, f=card_frame, s=accent_strip, a=avatar, n=name_lbl):
-                f.configure(bg=CARD_HL, highlightbackground=ACCENT)
-                s.configure(bg=ACCENT2)
-                a.configure(bg=CARD_HL)
-                n.configure(bg=CARD_HL)
-
-            def _leave(e, f=card_frame, s=accent_strip, a=avatar, n=name_lbl):
-                f.configure(bg=BG_CARD, highlightbackground=BORDER)
-                s.configure(bg=ACCENT)
-                a.configure(bg=BG_CARD)
-                n.configure(bg=BG_CARD)
-
             def _click(e=None, p=path):
                 self._launch(p)
 
-            for widget in (card_frame, avatar, name_lbl):
-                widget.bind("<Enter>",    _enter)
-                widget.bind("<Leave>",    _leave)
+            for widget in (card_frame, icon_lbl, name_lbl):
                 widget.bind("<Button-1>", _click)
                 widget.configure(cursor="hand2")
 
